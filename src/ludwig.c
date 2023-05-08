@@ -1365,12 +1365,12 @@ int free_energy_init_rt(ludwig_t * ludwig) {
       case FE_FORCE_METHOD_STRESS_DIVERGENCE:
       case FE_FORCE_METHOD_PHI_GRADMU:
       case FE_FORCE_METHOD_PHI_GRADMU_CORRECTION:
-	break;
+	      break;
       case FE_FORCE_METHOD_RELAXATION_SYMM:
-	fe->super.use_stress_relaxation = 1;
-	break;
+	      fe->super.use_stress_relaxation = 1;
+	      break;
       default:
-	pe_fatal(pe, "symmetric free energy force_method not available\n");
+	    pe_fatal(pe, "symmetric free energy force_method not available\n");
       }
 
       pth_create(pe, cs, method, &ludwig->pth);
@@ -1559,7 +1559,6 @@ int free_energy_init_rt(ludwig_t * ludwig) {
     ludwig->fe = (fe_t *) fe;
     
   }
-
   else if (strcmp(description, "double_symmetric") == 0) {
 
     fe_double_symmetric_param_t param;
@@ -1579,6 +1578,14 @@ int free_energy_init_rt(ludwig_t * ludwig) {
       field_options_t opts = field_options_ndata_nhalo(nf, nhalo);
       field_create(pe, cs, NULL, "phi", &opts, &ludwig->phi);
     }
+
+    /* LIGHTHOUSE assert(colloid_map) will return an error if no free energy is used */
+    {
+      field_options_t opts = field_options_ndata_nhalo(1, 1);
+      io_info_args_rt(rt, RT_FATAL, "colloid_map", IO_INFO_READ_WRITE, &opts.iodata);
+      field_create(pe, cs, le, "colloid_map", &opts, &ludwig->colloid_map);
+    }
+
 
     field_grad_create(pe, ludwig->phi, ngrad, &ludwig->phi_grad);
 
@@ -1634,7 +1641,6 @@ int free_energy_init_rt(ludwig_t * ludwig) {
 
     ludwig->fe_double_symmetric = fe;
     ludwig->fe = (fe_t *) fe;
- 
   }
   else if (strcmp(description, "ternary") == 0) {
 
