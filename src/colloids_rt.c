@@ -54,7 +54,7 @@ int wall_ss_cut_init(pe_t * pe, cs_t * cs, rt_t * rt, wall_t * wall,
 		     interact_t * inter);
 
 int colloids_rt_dynamics(cs_t * cs, colloids_info_t * cinfo, wall_t * wall,
-			 map_t * map, const lb_model_t * model);
+			 map_t * map, const lb_model_t * model, field_t * colloid_map);
 int colloids_rt_gravity(pe_t * pe, rt_t * rt, colloids_info_t * cinfo);
 int colloids_rt_init_few(pe_t * pe, rt_t * rt, colloids_info_t * cinfo, int nc);
 int colloids_rt_init_from_file(pe_t * pe, rt_t * rt, colloids_info_t * cinfo,
@@ -84,7 +84,7 @@ int colloids_rt_cell_list_checks(pe_t * pe, cs_t * cs, colloids_info_t ** pinfo,
 int colloids_init_rt(pe_t * pe, rt_t * rt, cs_t * cs, colloids_info_t ** pinfo,
 		     colloid_io_t ** pcio,
 		     interact_t ** interact, wall_t * wall, map_t * map,
-		     const lb_model_t * model) {
+		     const lb_model_t * model, field_t * colloid_map) {
   int nc;
   int init_one = 0;
   int init_two = 0;
@@ -165,7 +165,7 @@ int colloids_init_rt(pe_t * pe, rt_t * rt, cs_t * cs, colloids_info_t ** pinfo,
   colloids_info_map_init(*pinfo);
   colloids_halo_state(*pinfo);
 
-  colloids_rt_dynamics(cs, *pinfo, wall, map, model);
+  colloids_rt_dynamics(cs, *pinfo, wall, map, model, colloid_map);
   colloids_rt_gravity(pe, rt, *pinfo);
 
   /* Set the update frequency and report (non-default values) */
@@ -195,7 +195,7 @@ int colloids_init_rt(pe_t * pe, rt_t * rt, cs_t * cs, colloids_info_t ** pinfo,
  *****************************************************************************/
 
 int colloids_rt_dynamics(cs_t * cs, colloids_info_t * cinfo, wall_t * wall,
-			 map_t * map, const lb_model_t * model) {
+			 map_t * map, const lb_model_t * model, field_t * colloid_map) {
 
   int nsubgrid_local = 0;
   int nsubgrid = 0;
@@ -215,7 +215,7 @@ int colloids_rt_dynamics(cs_t * cs, colloids_info_t * cinfo, wall_t * wall,
 
   /* Assume there are always fully-resolved particles */
 
-  build_update_map(cs, cinfo, map);
+  build_update_map(cs, cinfo, map, colloid_map);
   build_update_links(cs, cinfo, wall, map, model);
 
 
@@ -458,9 +458,16 @@ int colloids_rt_state_stub(pe_t * pe, rt_t * rt, colloids_info_t * cinfo,
   snprintf(key, BUFSIZ-1, "%s_%s", stub, "type");
   nrt = rt_string_parameter(rt, key, value, BUFSIZ);
 
+  snprintf(key, BUFSIZ-1, "%s_%s", stub, "shape");
+  nrt = rt_string_parameter(rt, key, value, BUFSIZ);
+
   state->type = COLLOID_TYPE_DEFAULT;
   if (strcmp(value, "active") == 0) state->type = COLLOID_TYPE_ACTIVE;
   if (strcmp(value, "subgrid") == 0) state->type = COLLOID_TYPE_SUBGRID;
+  if (nrt) pe_info(pe, format_s1, stub, value);
+
+  state->shape = COLLOID_SHAPE_DEFAULT;
+  if (strcmp(value, "pacman") == 0) state->shape = COLLOID_SHAPE_PACMAN;
   if (nrt) pe_info(pe, format_s1, stub, value);
 
   snprintf(key, BUFSIZ-1, "%s_%s", stub, "rng");
@@ -503,6 +510,10 @@ int colloids_rt_state_stub(pe_t * pe, rt_t * rt, colloids_info_t * cinfo,
   nrt = rt_double_parameter_vector(rt, key, state->m);
   if (nrt) pe_info(pe, format_e3, key, state->m[X], state->m[Y], state->m[Z]);
 
+  snprintf(key, BUFSIZ-1, "%s_%s", stub, "n");
+  nrt = rt_double_parameter_vector(rt, key, state->n);
+  if (nrt) pe_info(pe, format_e3, key, state->n[X], state->n[Y], state->n[Z]);
+
   snprintf(key, BUFSIZ-1, "%s_%s", stub, "b1");
   nrt = rt_double_parameter(rt, key, &state->b1);
   if (nrt) pe_info(pe, format_e1, key, state->b1);
@@ -530,6 +541,30 @@ int colloids_rt_state_stub(pe_t * pe, rt_t * rt, colloids_info_t * cinfo,
   snprintf(key, BUFSIZ-1, "%s_%s", stub, "epsilon");
   nrt = rt_double_parameter(rt, key, &state->epsilon);
   if (nrt) pe_info(pe, format_e1, key, state->epsilon);
+
+  snprintf(key, BUFSIZ-1, "%s_%s", stub, "tumbletheta");
+  nrt = rt_double_parameter(rt, key, &state->tumbletheta);
+  if (nrt) pe_info(pe, format_e1, key, state->tumbletheta);
+
+  snprintf(key, BUFSIZ-1, "%s_%s", stub, "tumblephi");
+  nrt = rt_double_parameter(rt, key, &state->tumblephi);
+  if (nrt) pe_info(pe, format_e1, key, state->tumblephi);
+
+  snprintf(key, BUFSIZ-1, "%s_%s", stub, "mu_phoretic");
+  nrt = rt_double_parameter(rt, key, &state->mu_phoretic);
+  if (nrt) pe_info(pe, format_e1, key, state->mu_phoretic);
+
+  snprintf(key, BUFSIZ-1, "%s_%s", stub, "alpha_prod");
+  nrt = rt_double_parameter(rt, key, &state->alpha_prod);
+  if (nrt) pe_info(pe, format_e1, key, state->alpha_prod);
+
+  snprintf(key, BUFSIZ-1, "%s_%s", stub, "alpha_pacman_mn");
+  nrt = rt_double_parameter(rt, key, &state->alpha_pacman_mn);
+  if (nrt) pe_info(pe, format_e1, key, state->alpha_pacman_mn);
+
+  snprintf(key, BUFSIZ-1, "%s_%s", stub, "alpha_pacman_mp");
+  nrt = rt_double_parameter(rt, key, &state->alpha_pacman_mp);
+  if (nrt) pe_info(pe, format_e1, key, state->alpha_pacman_mp);
 
   return 0;
 }

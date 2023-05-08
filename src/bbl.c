@@ -29,6 +29,10 @@
 #include "bbl.h"
 #include "colloid.h"
 #include "colloids.h"
+#include "field.h"
+#include "ran.h"
+#include "lb_model.h"
+#include "lb_data.h"
 
 struct bbl_s {
   pe_t * pe;            /* Parallel environment */
@@ -39,7 +43,8 @@ struct bbl_s {
   double stress[3][3];  /* Surface stress diagnostic */
 };
 
-static int bbl_pass1(bbl_t * bbl, lb_t * lb, colloids_info_t * cinfo);
+//static int bbl_pass1(bbl_t * bbl, lb_t * lb, colloids_info_t * cinfo);
+static int bbl_pass1(bbl_t * bbl, lb_t * lb, colloids_info_t * cinfo, field_t * phi);
 static int bbl_pass2(bbl_t * bbl, lb_t * lb, colloids_info_t * cinfo);
 static int bbl_active_conservation(bbl_t * bbl, lb_t * lb,
 				   colloids_info_t * cinfo);
@@ -50,6 +55,18 @@ __global__ void bbl_pass0_kernel(kernel_ctxt_t * ktxt, cs_t * cs, lb_t * lb,
 				 colloids_info_t * cinfo);
 
 static __constant__ lb_collide_param_t lbp;
+
+static int is_chemotaxis_ = 0;
+static int is_production_ = 0;
+static int is_light_source_ = 0;
+static int is_2d_dynamics_ = 0;
+
+static int is_tumble_ = 0;
+static int fprod_ = 1;
+static int ftumble_ = 1;
+static int rtumble_ = 0;
+
+static double light_source_[3] = {0., 0., 0.};
 
 /*****************************************************************************
  *
@@ -145,7 +162,7 @@ int bbl_active_set(bbl_t * bbl, colloids_info_t * cinfo) {
 
 __host__
 int bounce_back_on_links(bbl_t * bbl, lb_t * lb, wall_t * wall,
-			 colloids_info_t * cinfo) {
+			 colloids_info_t * cinfo, field_t * phi) {
 
   int ntotal;
   int nlocal[3];
@@ -166,7 +183,7 @@ int bounce_back_on_links(bbl_t * bbl, lb_t * lb, wall_t * wall,
   /* __NVCC__ TODO: remove */
   lb_memcpy(lb, tdpMemcpyDeviceToHost);
 
-  bbl_pass1(bbl, lb, cinfo);
+  bbl_pass1(bbl, lb, cinfo, phi);
 
   colloid_sums_halo(cinfo, COLLOID_SUM_DYNAMICS);
 
@@ -370,7 +387,7 @@ __global__ void bbl_pass0_kernel(kernel_ctxt_t * ktxt, cs_t * cs, lb_t * lb,
  *
  *****************************************************************************/
 
-static int bbl_pass1(bbl_t * bbl, lb_t * lb, colloids_info_t * cinfo) {
+static int bbl_pass1(bbl_t * bbl, lb_t * lb, colloids_info_t * cinfo, field_t * phi) {
 
   int ia;
   int i, j, ij, ji;
@@ -385,6 +402,14 @@ static int bbl_pass1(bbl_t * bbl, lb_t * lb, colloids_info_t * cinfo) {
   double tans[3], vector1[3];
   double fdist;
   LB_RCS2_DOUBLE(rcs2);
+
+  /* Attributes associated with chemotaxis */
+  double mu_phoretic;
+  double tangphi[3], gphi[3];
+  int pp, indexpp;
+  int lsite[3];
+  double phipp;
+  double rb_dot_gphi;
 
   physics_t * phys = NULL;
   colloid_t * pc = NULL;
@@ -472,6 +497,30 @@ static int bbl_pass1(bbl_t * bbl, lb_t * lb, colloids_info_t * cinfo) {
 	  cross_product(p_link->rb, pc->s.m, vector1);
 	  cross_product(vector1, p_link->rb, tans);
 
+    if(is_chemotaxis_) {
+      mu_phoretic = pc->s.mu_phoretic;
+
+      cs_index_to_ijk(bbl->cs,i,lsite);
+      gphi[0] = gphi[1] = gphi[2] = 0.0;
+
+      for(pp=0;pp<NVEL;pp++) {
+        indexpp = cs_index(bbl->cs,(lsite[0]+lb->model.cv[pp][0]),(lsite[1]+lb->model.cv[pp][1]),(lsite[2]+lb->model.cv[pp][2]     ));
+        phipp = phi->data[addr_rank1(phi->nsites, phi->nf, indexpp, 0)]; 
+        gphi[0] += lb->model.wv[pp]*phipp*lb->model.cv[pp][0];
+        gphi[1] += lb->model.wv[pp]*phipp*lb->model.cv[pp][1];
+        gphi[2] += lb->model.wv[pp]*phipp*lb->model.cv[pp][2];
+      }
+
+      rb_dot_gphi = dot_product(p_link->rb, gphi);
+
+      /* Assign the diffusiophoretic mobility of the local node to mu_1 or mu_2 depending on its position relative to the orientation of the colloid and the janus angle. Between the two regions we add a gradual change from mu_1 to mu_2 */
+
+      for (ia=0; ia<3; ia++) {
+        /* Tangential component of ...? */
+        tangphi[ia] = mu_phoretic*(gphi[ia] - rmod*rmod*p_link->rb[ia]*rb_dot_gphi);
+      }
+    }
+
 	  mod = modulus(tans);
 	  rmod = 0.0;
 	  if (mod != 0.0) rmod = 1.0/mod;
@@ -479,7 +528,8 @@ static int bbl_pass1(bbl_t * bbl, lb_t * lb, colloids_info_t * cinfo) {
 
 	  dm_a = 0.0;
 	  for (ia = 0; ia < 3; ia++) {
-	    dm_a += -delta*plegendre*rmod*tans[ia]*lb->model.cv[ij][ia];
+	    //dm_a += -delta*plegendre*rmod*tans[ia]*lb->model.cv[ij][ia];
+	    dm_a += -delta*(plegendre*rmod*tans[ia] + tangphi[ia])*lb->model.cv[ij][ia];
 	  }
 
 	  lb_f(lb, i, ij, 0, &fdist);
@@ -584,6 +634,9 @@ static int bbl_pass2(bbl_t * bbl, lb_t * lb, colloids_info_t * cinfo) {
   double dgtm1;
   double rho0;
   LB_RCS2_DOUBLE(rcs2);
+
+  int step;
+  double vmod;
 
   physics_t * phys = NULL;
   colloid_t * pc = NULL;
@@ -1049,3 +1102,179 @@ int bbl_surface_stress(bbl_t * bbl, double slocal[3][3]) {
 
   return 0;
 }
+
+
+
+/*****************************************************************************
+ *
+ *  phi_production_by_coll_count
+ *  
+ *  Create phi in the fluid nodes around the vesicle
+ *
+ *  The criteria for production to occur on a fluid node next to a colloid node is : "is there an unbroken link of fluid nodes between the node and the light source" ? 
+
+ *
+ * Check that there is an unbroken line of fluid node in the direction of the wall 
+ *                1. it only works for a z-orthogonal wall (easy to generalize to x- and y-) 
+ *                2. it only works when there is only 1 processor in the z direction (not so easy to generalize) 
+ *
+ *****************************************************************************/
+
+double phi_production_by_coll_count(colloids_info_t * cinfo, field_t * phi, map_t * map, field_t * colloid_map, lb_t * lb) {
+
+  int i, j, ij, ji;
+  int index;
+  int status;
+  int ic, jc, kc;
+  int step;
+  int all_nodes_are_fluid = 1; 
+  int node_is_fluid;
+  int l = 0;
+  int nc;
+  int lsite[3], lsite2[3];
+
+  double phi0; 
+  double rmod, cost, mod;
+  double alpha_prod;
+  double produced = 0.;
+  double total;
+  double norm_cv;
+  double normalized_cv[3];
+  double udotl;
+
+
+  MPI_Comm comm;
+  cs_cart_comm(phi->cs, &comm);
+
+  physics_t * phys = NULL;
+  colloid_t * pc = NULL;
+  colloid_link_t * p_link;
+
+  assert(cinfo);
+
+  colloids_info_ntotal(cinfo, &nc);
+
+  if (nc == 0) return 0.0;
+
+  physics_ref(&phys);
+
+  step = physics_control_timestep(phys);
+
+  if((is_production_) && (!(step%fprod_))) {
+
+  /* All colloids, including halo */
+
+     colloids_info_all_head(cinfo, &pc);
+
+     for ( ; pc; pc = pc->nextall) {
+
+      p_link = pc->lnk;
+
+      alpha_prod = pc->s.alpha_prod;
+
+      for ( ; p_link; p_link = p_link->next) {
+
+        i = p_link->i;       /* index site i (outside) */
+        j = p_link->j;       /* index site j (inside) */
+        ij = p_link->p;      /* link velocity index i->j */
+        ji = NVEL - ij;      /* link velocity index j->i */
+        cs_index_to_ijk(phi->cs, j, lsite);
+        cs_index_to_ijk(phi->cs, i, lsite2);
+
+        if (p_link->status == LINK_FLUID) {
+
+          norm_cv = sqrt(lb->model.cv[ij][X]*lb->model.cv[ij][X] + lb->model.cv[ij][Y]*lb->model.cv[ij][Y] + lb->model.cv[ij][Z]*lb->model.cv[ij][Z]);
+          
+          normalized_cv[X] = lb->model.cv[ij][X] / norm_cv;
+          normalized_cv[Y] = lb->model.cv[ij][Y] / norm_cv;
+          normalized_cv[Z] = lb->model.cv[ij][Z] / norm_cv;
+
+	        udotl = normalized_cv[X]*light_source_[X] + normalized_cv[Y]*light_source_[Y] + normalized_cv[Z]*light_source_[Z];
+
+          /* if link points toward the light */
+          if ((int) udotl == 1) {
+
+            all_nodes_are_fluid = 1;
+            l = 0;
+            while ((all_nodes_are_fluid) && (lsite[Z] - l > 1)) {
+              l += 1;
+
+              if ((int) light_source_[Z] != 1) pe_fatal(phi->pe, "only light_source_ = {0., 0., 1.} works !\n");
+
+              /* Get index of next node in the direction of the light */
+              index = cs_index(phi->cs, lsite[X], lsite[Y], lsite[Z] - l);
+
+              map_status(map, index, &status);
+              node_is_fluid = (int) (status == MAP_FLUID);
+              all_nodes_are_fluid *= node_is_fluid;
+            }
+            
+            if (all_nodes_are_fluid) {   
+              /* light reaches the node */
+              field_scalar(phi, i, &phi0);
+              field_scalar_set(phi, i, phi0 + alpha_prod);
+              int index_outside = cs_index(phi->cs, lsite2[X], lsite2[Y], lsite2[Z]);
+              produced += alpha_prod;
+            }
+          /* Next link */
+          }
+        }
+      }
+    }
+  }
+
+  MPI_Allreduce(&produced, &total, 1, MPI_DOUBLE, MPI_SUM, comm);
+  //printf("produced %f\n", produced);
+  return total;
+}
+
+
+/*****************************************************************************
+ *
+ *  bbl_run_time
+ *
+ *****************************************************************************/
+
+void bbl_run_time(rt_t * rt) {
+
+  int ivalue;
+  double vvalue[3];
+  double value;
+
+  ivalue = 0;
+  value = 0.0;
+
+  assert(rt);
+
+  rt_int_parameter(rt, "colloids_constrained_to_plane_on", &ivalue);
+  is_2d_dynamics_ = ivalue;
+
+  rt_int_parameter(rt, "chemotaxis_on", &ivalue);
+  is_chemotaxis_ = ivalue;
+  
+  rt_int_parameter(rt, "production_on", &ivalue);
+  is_production_ = ivalue;
+  
+  rt_int_parameter(rt, "light_source_on", &ivalue);
+  is_light_source_ = ivalue;
+
+  rt_double_parameter_vector(rt, "light_source", vvalue);
+  light_source_[X] = vvalue[X];
+  light_source_[Y] = vvalue[Y];
+  light_source_[Z] = vvalue[Z];
+
+  rt_int_parameter(rt, "chemical_production_rate", &ivalue);
+  fprod_ = ivalue;
+
+  rt_int_parameter(rt, "tumble_on", &ivalue);
+  is_tumble_ = ivalue;
+
+  rt_int_parameter(rt, "tumble_frequency", &ivalue);
+  ftumble_ = ivalue;
+
+  rt_int_parameter(rt, "tumble_time", &ivalue);
+  rtumble_ = ivalue;
+
+  return;
+}
+

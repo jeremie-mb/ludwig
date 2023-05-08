@@ -72,7 +72,7 @@ int build_conservation_psi(colloids_info_t * cinfo, psi_t * psi,
  *
  ****************************************************************************/
 
-int build_update_map(cs_t * cs, colloids_info_t * cinfo, map_t * map) {
+int build_update_map(cs_t * cs, colloids_info_t * cinfo, map_t * map, field_t * colloid_map) {
 
   int nlocal[3];
   int noffset[3];
@@ -87,12 +87,28 @@ int build_update_map(cs_t * cs, colloids_info_t * cinfo, map_t * map) {
 
   colloid_t * p_colloid = NULL;
 
-  double  r0[3];
-  double  rsite0[3];
-  double  rsep[3];
+  double r0[3];
+  double rsite0[3];
+  double rsep[3];
+  double rsep_norm;
+  double m[3], n[3], p[3];
 
   double   radius, rsq;
   double   cosine, mod;
+  double alpha_pacman_mn;
+  double alpha_pacman_mp;
+  double cosalpha;
+  double alpha;
+  double rsep_mn[3];
+  double rsep_mp[3];
+  double rsep_m[3];
+  double rsep_mn_norm, rsep_mp_norm, rsep_m_norm;
+  double dist_mn[3], dist_mp[3];
+  double dist_mn_norm, dist_mp_norm;
+  double dist[3];
+  double dist_norm;
+  double sinalpha_mn, sinalpha_mp, cosalpha_mn, cosalpha_mp;
+  double alpha_mn, alpha_mp;
 
   /* To set the wetting data in the map, we assume C, H zero at moment */
   int ndata;
@@ -110,6 +126,15 @@ int build_update_map(cs_t * cs, colloids_info_t * cinfo, map_t * map) {
   cs_nhalo(cs, &nhalo);
 
   colloids_info_ncell(cinfo, ncell);
+
+  for (ic = 1; ic <= nlocal[X]; ic++) {
+    for (jc = 1; jc <= nlocal[Y]; jc++) {
+      for (kc = 1; kc <= nlocal[Z]; kc++) {
+        index = cs_index(colloid_map->cs, ic, jc, kc);
+        colloid_map->data[addr_rank0(colloid_map->nsites, index)] = 0.0;
+      }
+    }
+  }
 
   /* First, set any existing colloid sites to fluid */
 
@@ -148,7 +173,7 @@ int build_update_map(cs_t * cs, colloids_info_t * cinfo, map_t * map) {
 
 	for ( ; p_colloid; p_colloid = p_colloid->next) {
 
-          if (p_colloid->s.type == COLLOID_TYPE_SUBGRID) continue;
+    if (p_colloid->s.type == COLLOID_TYPE_SUBGRID) continue;
 
 	  /* Set actual position and radius */
 
@@ -181,44 +206,133 @@ int build_update_map(cs_t * cs, colloids_info_t * cinfo, map_t * map) {
 	    for (j = j_min; j <= j_max; j++)
 	      for (k = k_min; k <= k_max; k++) {
 
-		/* rsite0 is the coordinate position of the site */
-
+    /* rsite0 contain the indices of the node in the domain */
 		rsite0[X] = 1.0*i;
 		rsite0[Y] = 1.0*j;
 		rsite0[Z] = 1.0*k;
+
+    /* rsep is the distance between the node and the center of the colloid */
 		cs_minimum_distance(cs, rsite0, r0, rsep);
 
 		/* Are we inside? */
+    if (p_colloid->s.shape == COLLOID_SHAPE_PACMAN) {
 
-		if (dot_product(rsep, rsep) < rsq) {
+      alpha_pacman_mn = p_colloid->s.alpha_pacman_mn;
+      alpha_pacman_mp = p_colloid->s.alpha_pacman_mp;
 
-		  /* Set index */
-		  index = cs_index(cs, i, j, k);
+      double norm_m = modulus(p_colloid->s.m);
+      m[X] = p_colloid->s.m[X] / norm_m;
+      m[Y] = p_colloid->s.m[Y] / norm_m;
+      m[Z] = p_colloid->s.m[Z] / norm_m;
 
-		  colloids_info_map_set(cinfo, index, p_colloid);
-		  map_status_set(map, index, MAP_COLLOID);
+      double norm_n = modulus(p_colloid->s.n);
+      n[X] = p_colloid->s.n[X] / norm_n;
+      n[Y] = p_colloid->s.n[Y] / norm_n;
+      n[Z] = p_colloid->s.n[Z] / norm_n;
 
-		  /* Janus particles have h = h_0 cos (theta)
-		   * with s[3] pointing to the 'north pole' */
+      p[X] = m[Y]*n[Z] - m[Z]*n[Y];
+      p[Y] = m[Z]*n[X] - m[X]*n[Z];
+      p[Z] = m[X]*n[Y] - m[Y]*n[X];
 
-		  cosine = 1.0;
-		  if (p_colloid->s.type == COLLOID_TYPE_JANUS) {
-		    mod = modulus(rsep);
-		    if (mod > 0.0) {
-		      cosine = dot_product(p_colloid->s.s, rsep)/mod;
-		    }
-		  }
+      rsep_norm = modulus(rsep);
+      rsep_m[X] = dot_product(rsep, m)*m[X];
+      rsep_m[Y] = dot_product(rsep, m)*m[Y];
+      rsep_m[Z] = dot_product(rsep, m)*m[Z];
 
-		  wet[0] = p_colloid->s.c;
-		  wet[1] = cosine*p_colloid->s.h;
+      rsep_m_norm = modulus(rsep_m);
 
-		  map_data_set(map, index, wet);
-		}
-		/* Next site */
-	      }
+      /* rsep_mp : projection of rsep onto vect(m,p) */
+      rsep_mp[X] = dot_product(rsep, m)*m[X] + dot_product(rsep, p)*p[X];
+      rsep_mp[Y] = dot_product(rsep, m)*m[Y] + dot_product(rsep, p)*p[Y];
+      rsep_mp[Z] = dot_product(rsep, m)*m[Z] + dot_product(rsep, p)*p[Z];
+
+      rsep_mp_norm = modulus(rsep_mp);
+
+      /* rsep_mn : projection of rsep onto vect(m,n) */
+      rsep_mn[X] = dot_product(rsep, m)*m[X] + dot_product(rsep, n)*n[X];
+      rsep_mn[Y] = dot_product(rsep, m)*m[Y] + dot_product(rsep, n)*n[Y];
+      rsep_mn[Z] = dot_product(rsep, m)*m[Z] + dot_product(rsep, n)*n[Z];
+
+      rsep_mn_norm = modulus(rsep_mn);
+
+      /* Angle between the two */
+
+      /* dist_mn : distance between rsep_m and rsep */
+      dist[X] = rsep_m[X] - rsep_mp[X];
+      dist[Y] = rsep_m[Y] - rsep_mp[Y];
+      dist[Z] = rsep_m[Z] - rsep_mp[Z];
+
+      dist_norm = modulus(dist);
+
+      /* alpha_mn : angle between rsep and vect(m,n) */
+      if (rsep_mp_norm == 0.0) cosalpha_mn = 1.;
+      else cosalpha_mn = rsep_m_norm / rsep_mp_norm;
+
+      if (rsep_mn_norm == 0.0) cosalpha_mp = 1.;
+      else cosalpha_mp = rsep_m_norm / rsep_mn_norm;
+
+      if (cosalpha_mn > 1.) cosalpha_mn = 1.;
+      if (cosalpha_mn < -1.) cosalpha_mn = -1.;
+
+      alpha_mn = acos(cosalpha_mn);
+
+      double rsep_m = dot_product(rsep, m);
+
+      /* alpha_pacman_mp is is currently unused */
+      if (dot_product(rsep, rsep) < rsq) {
+        if (alpha_mn < alpha_pacman_mn) {
+          if (rsep_m < 0) {
+            index = cs_index(cs, i, j, k);
+            colloids_info_map_set(cinfo, index, p_colloid);
+            map_status_set(map, index, MAP_COLLOID);
+            wet[0] = p_colloid->s.c;
+            wet[1] = p_colloid->s.h;
+            map_data_set(map, index, wet);
+            colloid_map->data[addr_rank0(colloid_map->nsites, index)] = 1.0;
+          }
+        }
+        else {
+          index = cs_index(cs, i, j, k);
+          colloids_info_map_set(cinfo, index, p_colloid);
+          map_status_set(map, index, MAP_COLLOID);
+          wet[0] = p_colloid->s.c;
+          wet[1] = p_colloid->s.h;
+          map_data_set(map, index, wet);
+          colloid_map->data[addr_rank0(colloid_map->nsites, index)] = 1.0;
+        }
+      }
+    }
+    else {
+		  if (dot_product(rsep, rsep) < rsq) {
+
+        /* Set index */
+	      index = cs_index(cs, i, j, k);
+
+        colloids_info_map_set(cinfo, index, p_colloid);
+        map_status_set(map, index, MAP_COLLOID);
+
+        /* Janus particles have h = h_0 cos (theta)
+        * with s[3] pointing to the 'north pole' */
+
+        cosine = 1.0;
+        if (p_colloid->s.type == COLLOID_TYPE_JANUS) {
+          mod = modulus(rsep);
+          if (mod > 0.0) {
+            cosine = dot_product(p_colloid->s.s, rsep)/mod;
+          }
+        }
+
+        wet[0] = p_colloid->s.c;
+        wet[1] = cosine*p_colloid->s.h;
+
+        map_data_set(map, index, wet);
+      }
+      /* Next site */
+    }
 
 	  /* Next colloid */
-	}
+	  }
+  }
 
 	/* Next cell */
       }

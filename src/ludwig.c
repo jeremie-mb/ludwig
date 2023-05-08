@@ -138,6 +138,7 @@ struct ludwig_s {
   field_t * phi;            /* Scalar order parameter */
   field_t * p;              /* Vector order parameter */
   field_t * q;              /* Tensor order parameter */
+  field_t * colloid_map;
   field_grad_t * phi_grad;  /* Gradients for phi */
   field_grad_t * p_grad;    /* Gradients for p */
   field_grad_t * q_grad;    /* Gradients for q */
@@ -263,6 +264,7 @@ static int ludwig_rt(ludwig_t * ludwig) {
   if (ludwig->phi) field_init_io_info(ludwig->phi, io_grid, form, form);
   if (ludwig->p) field_init_io_info(ludwig->p, io_grid, form, form);
   if (ludwig->q) field_init_io_info(ludwig->q, io_grid, form, form);
+  if (ludwig->colloid_map) field_init_io_info(ludwig->colloid_map, io_grid, form, form);
 
   if (ludwig->phi || ludwig->p || ludwig->q) {
     const char * value = ""; /* BLANK appeared in old output */
@@ -302,7 +304,7 @@ static int ludwig_rt(ludwig_t * ludwig) {
   wall_rt_init(pe, cs, rt, ludwig->lb, ludwig->map, &ludwig->wall);
   colloids_init_rt(pe, rt, cs, &ludwig->collinfo, &ludwig->cio,
 		   &ludwig->interact, ludwig->wall, ludwig->map,
-		   &ludwig->lb->model);
+		   &ludwig->lb->model, ludwig->colloid_map);
   colloids_init_ewald_rt(pe, rt, cs, ludwig->collinfo, &ludwig->ewald);
 
   bbl_create(pe, ludwig->cs, ludwig->lb, &ludwig->bbl);
@@ -352,6 +354,12 @@ static int ludwig_rt(ludwig_t * ludwig) {
       io_event_t event = {0};
       pe_info(pe, "Reading q_ab files for step %d\n", ntstep);
       field_io_read(ludwig->q, ntstep, &event);
+    }
+
+    if (ludwig->colloid_map) {
+      io_event_t event = {0};
+      pe_info(pe, "Reading colloid map files for step %d\n", ntstep);
+      field_io_read(ludwig->colloid_map, ntstep, &event);
     }
 
     if (ludwig->hydro) {
@@ -430,6 +438,7 @@ static int ludwig_rt(ludwig_t * ludwig) {
     }
   }
 
+  bbl_run_time(rt);
   return 0;
 }
 
@@ -513,6 +522,7 @@ void ludwig_run(const char * inputfile) {
   if (ludwig->phi) field_memcpy(ludwig->phi, tdpMemcpyHostToDevice);
   if (ludwig->p)   field_memcpy(ludwig->p, tdpMemcpyHostToDevice);
   if (ludwig->q)   field_memcpy(ludwig->q, tdpMemcpyHostToDevice);
+  if (ludwig->colloid_map)   field_memcpy(ludwig->colloid_map, tdpMemcpyHostToDevice);
 
   /* Lap timer: include initial statistics in first trip */
   TIMER_start(TIMER_LAP);
@@ -587,6 +597,7 @@ void ludwig_run(const char * inputfile) {
 
       TIMER_start(TIMER_PHI_HALO);
       field_halo(ludwig->phi);
+      //field_halo(ludwig->colloid_map);
       TIMER_stop(TIMER_PHI_HALO);
 
       /* Boundary conditions on phi after halo and
@@ -794,6 +805,9 @@ void ludwig_run(const char * inputfile) {
 			  ludwig->hydro,
 			  ludwig->map, ludwig->noise_phi);
       }
+      double alpha_produced;
+      alpha_produced = phi_production_by_coll_count(ludwig->collinfo, ludwig->phi, ludwig->map, ludwig->colloid_map, ludwig->lb);
+
 
       if (ludwig->p) {
 	leslie_ericksen_update(ludwig->leslie, ludwig->hydro);
@@ -872,7 +886,7 @@ void ludwig_run(const char * inputfile) {
 
       subgrid_update(ludwig->collinfo, ludwig->hydro, noise_flag);
       bounce_back_on_links(ludwig->bbl, ludwig->lb, ludwig->wall,
-			   ludwig->collinfo);
+			   ludwig->collinfo, ludwig->phi);
       wall_bbl(ludwig->wall);
       TIMER_stop(TIMER_BBL);
     }
@@ -950,6 +964,16 @@ void ludwig_run(const char * inputfile) {
 	pe_info(ludwig->pe, "Writing psi file at step %d!\n", step);
 	sprintf(filename,"%spsi-%8.8d", subdirectory, step);
 	io_write_data(iohandler, filename, ludwig->psi);
+      }
+    }
+
+    if (is_colloid_map_output_step() || is_config_step()) {
+
+      if (ludwig->colloid_map) {
+	io_event_t event = {0};
+	pe_info(ludwig->pe, "Writing colloid_map file at step %d!\n", step);
+	field_memcpy(ludwig->colloid_map, tdpMemcpyDeviceToHost);
+	field_io_write(ludwig->colloid_map, step, &event);
       }
     }
 
@@ -1088,6 +1112,7 @@ void ludwig_run(const char * inputfile) {
   if (ludwig->phi)      field_free(ludwig->phi);
   if (ludwig->p)        field_free(ludwig->p);
   if (ludwig->q)        field_free(ludwig->q);
+  if (ludwig->colloid_map)      field_free(ludwig->colloid_map);
 
   bbl_free(ludwig->bbl);
   colloids_info_free(ludwig->collinfo);
@@ -1285,6 +1310,14 @@ int free_energy_init_rt(ludwig_t * ludwig) {
       field_create(pe, cs, le, "phi", &opts, &ludwig->phi);
       field_grad_create(pe, ludwig->phi, ngrad, &ludwig->phi_grad);
     }
+
+    {
+      field_options_t opts = field_options_ndata_nhalo(1, 0);
+      io_info_args_rt(rt, RT_FATAL, "colloid_map", IO_INFO_READ_WRITE, &opts.iodata);
+      field_create(pe, cs, le, "colloid_map", &opts, &ludwig->colloid_map);
+    }
+
+
 
     pe_info(pe, "\n");
     pe_info(pe, "Free energy details\n");
@@ -2201,7 +2234,7 @@ int ludwig_colloids_update(ludwig_t * ludwig) {
 
   TIMER_start(TIMER_REBUILD);
 
-  build_update_map(ludwig->cs, ludwig->collinfo, ludwig->map);
+  build_update_map(ludwig->cs, ludwig->collinfo, ludwig->map, ludwig->colloid_map);
   build_remove_replace(ludwig->fe, ludwig->collinfo, ludwig->lb, ludwig->phi,
 		       ludwig->p, ludwig->q, ludwig->psi, ludwig->map);
   build_update_links(ludwig->cs, ludwig->collinfo, ludwig->wall, ludwig->map,

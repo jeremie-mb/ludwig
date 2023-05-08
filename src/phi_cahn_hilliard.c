@@ -86,9 +86,14 @@ __global__ void phi_ch_flux_mu1_kernel(kernel_ctxt_t * ktx,
 __global__ void phi_ch_flux_mu_ext_kernel(kernel_ctxt_t * ktx,
 					  lees_edw_t * le, advflux_t * flux,
 					  ch_kernel_t ch);
-__global__ void phi_ch_ufs_kernel(kernel_ctxt_t * ktx, lees_edw_t *le,
+/*__global__ void phi_ch_ufs_kernel(kernel_ctxt_t * ktx, lees_edw_t *le,
 				  field_t * field, advflux_t * flux,
 				  int ys, double wz);
+*/
+__global__ void phi_ch_ufs_kernel(kernel_ctxt_t * ktx, lees_edw_t *le,
+				  field_t * field, advflux_t * flux,
+				  int ys, double wz, double kappa_degr);
+
 __global__ void phi_ch_csum_kernel(kernel_ctxt_t * ktx, lees_edw_t *le,
 				   field_t * field, advflux_t * flux,
 				   field_t * csum, int ys, double wz);
@@ -984,6 +989,11 @@ static int phi_ch_update_forward_step(phi_ch_t * pch, field_t * phif) {
   int xs, ys, zs;
   dim3 nblk, ntpb;
   double wz = 1.0;
+  double kappa_degr;
+
+  physics_t * phys = NULL;
+  physics_ref(&phys);
+  physics_kappa_degr(phys, &kappa_degr);
 
   lees_edw_t * le = NULL;
   kernel_info_t limits;
@@ -1002,7 +1012,7 @@ static int phi_ch_update_forward_step(phi_ch_t * pch, field_t * phif) {
   kernel_ctxt_launch_param(ctxt, &nblk, &ntpb);
 
   tdpLaunchKernel(phi_ch_ufs_kernel, nblk, ntpb, 0, 0,
-		  ctxt->target, le, phif->target, pch->flux->target, ys, wz);
+		  ctxt->target, le, phif->target, pch->flux->target, ys, wz, kappa_degr);
 
   tdpAssert(tdpPeekAtLastError());
   tdpAssert(tdpDeviceSynchronize());
@@ -1024,7 +1034,7 @@ static int phi_ch_update_forward_step(phi_ch_t * pch, field_t * phif) {
 
 __global__ void phi_ch_ufs_kernel(kernel_ctxt_t * ktx, lees_edw_t *le,
 				  field_t * field, advflux_t * flux,
-				  int ys, double wz) {
+				  int ys, double wz, double kappa_degr) {
   int kindex;
   int kiterations;
   int ic, jc, kc, index;
@@ -1045,6 +1055,8 @@ __global__ void phi_ch_ufs_kernel(kernel_ctxt_t * ktx, lees_edw_t *le,
 
     index = lees_edw_index(le, ic, jc, kc);
     field_scalar(field, index, &phi);
+
+    phi -= kappa_degr*phi; /* LIGHTHOUSE */
 
     phi -= (+ flux->fe[addr_rank0(flux->nsite, index)]
 	    - flux->fw[addr_rank0(flux->nsite, index)]

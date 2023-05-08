@@ -48,6 +48,7 @@ int colloid_state_read_ascii(colloid_state_t * ps, FILE * fp) {
   nread += fscanf(fp, isformat, &ps->isfixedw);
   nread += fscanf(fp, isformat, &ps->isfixeds);
   nread += fscanf(fp, isformat, &ps->type);
+  nread += fscanf(fp, isformat, &ps->shape);
 
   for (n = 0; n < NBOND_MAX; n++) {
     nread += fscanf(fp, isformat, &ps->bond[n]);
@@ -75,6 +76,7 @@ int colloid_state_read_ascii(colloid_state_t * ps, FILE * fp) {
   nread += fscanf(fp, vformat, &ps->w[0], &ps->w[1], &ps->w[2]);
   nread += fscanf(fp, vformat, &ps->s[0], &ps->s[1], &ps->s[2]);
   nread += fscanf(fp, vformat, &ps->m[0], &ps->m[1], &ps->m[2]);
+  nread += fscanf(fp, vformat, &ps->n[0], &ps->n[1], &ps->n[2]);
   nread += fscanf(fp, sformat, &ps->b1);
   nread += fscanf(fp, sformat, &ps->b2);
   nread += fscanf(fp, sformat, &ps->c);
@@ -91,6 +93,12 @@ int colloid_state_read_ascii(colloid_state_t * ps, FILE * fp) {
   nread += fscanf(fp, sformat, &ps->sa);
   nread += fscanf(fp, sformat, &ps->saf);
   nread += fscanf(fp, sformat, &ps->al);
+  nread += fscanf(fp, sformat, &ps->tumbletheta);
+  nread += fscanf(fp, sformat, &ps->tumblephi);
+  nread += fscanf(fp, sformat, &ps->mu_phoretic);
+  nread += fscanf(fp, sformat, &ps->alpha_prod);
+  nread += fscanf(fp, sformat, &ps->alpha_pacman_mn);
+  nread += fscanf(fp, sformat, &ps->alpha_pacman_mp);
 
   for (n = 0; n < NPAD_DBL; n++) {
     nread += fscanf(fp, sformat, &ps->dpad[n]);
@@ -162,6 +170,7 @@ int colloid_state_write_ascii(const colloid_state_t * s, FILE * fp) {
   nwrite += fprintf(fp, isformat, s->isfixedw);
   nwrite += fprintf(fp, isformat, s->isfixeds);
   nwrite += fprintf(fp, isformat, s->type);
+  nwrite += fprintf(fp, isformat, s->shape);
 
   for (n = 0; n < NBOND_MAX; n++) {
     nwrite += fprintf(fp, isformat, s->bond[n]);
@@ -192,6 +201,7 @@ int colloid_state_write_ascii(const colloid_state_t * s, FILE * fp) {
   nwrite += fprintf(fp, vformat, s->w[0], s->w[1], s->w[2]);
   nwrite += fprintf(fp, vformat, s->s[0], s->s[1], s->s[2]);
   nwrite += fprintf(fp, vformat, s->m[0], s->m[1], s->m[2]);
+  nwrite += fprintf(fp, vformat, s->n[0], s->n[1], s->n[2]);
   nwrite += fprintf(fp, sformat, s->b1);
   nwrite += fprintf(fp, sformat, s->b2);
   nwrite += fprintf(fp, sformat, s->c);
@@ -208,6 +218,12 @@ int colloid_state_write_ascii(const colloid_state_t * s, FILE * fp) {
   nwrite += fprintf(fp, sformat, s->sa);
   nwrite += fprintf(fp, sformat, s->saf);
   nwrite += fprintf(fp, sformat, s->al);
+  nwrite += fprintf(fp, sformat, s->tumbletheta);
+  nwrite += fprintf(fp, sformat, s->tumblephi);
+  nwrite += fprintf(fp, sformat, s->mu_phoretic);
+  nwrite += fprintf(fp, sformat, s->alpha_prod);
+  nwrite += fprintf(fp, sformat, s->alpha_pacman_mn);
+  nwrite += fprintf(fp, sformat, s->alpha_pacman_mp);
 
 
   for (n = 0; n < NPAD_DBL; n++) {

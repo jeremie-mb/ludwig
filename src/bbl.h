@@ -17,6 +17,7 @@
 #include "colloids.h"
 #include "lb_data.h"
 #include "wall.h"
+#include "field.h"
 
 typedef struct bbl_s bbl_t;
 
@@ -24,7 +25,7 @@ int bbl_create(pe_t * pe, cs_t * cs, lb_t * lb, bbl_t ** pobj);
 int bbl_free(bbl_t * obj);
 
 int bounce_back_on_links(bbl_t * bbl, lb_t * lb, wall_t * wall,
-			 colloids_info_t * cinfo);
+			 colloids_info_t * cinfo, field_t * phi);
 int bbl_pass0(bbl_t * bbl, lb_t * lb, colloids_info_t * cinfo);
 
 int bbl_active_set(bbl_t * bbl, colloids_info_t * cinfo);
@@ -32,5 +33,8 @@ int bbl_update_colloids(bbl_t * bbl, wall_t * wall, colloids_info_t * cinfo);
 
 int bbl_surface_stress(bbl_t * bbl, double slocal[3][3]);
 int bbl_order_parameter_deficit(bbl_t * bbl, double * delta);
+
+double phi_production_by_coll_count(colloids_info_t * cinfo, field_t * field, map_t * map, field_t * colloid_map, lb_t * lb);
+void bbl_run_time(rt_t * rt);
 
 #endif

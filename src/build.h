@@ -26,7 +26,7 @@ int build_remove_replace(fe_t * fe, colloids_info_t * cinfo, lb_t * lb, field_t 
 
 int build_update_links(cs_t * cs, colloids_info_t * cinfo, wall_t * wall,
 		       map_t * map, const lb_model_t * model);
-int build_update_map(cs_t * cs, colloids_info_t * cinfo, map_t * map);
+int build_update_map(cs_t * cs, colloids_info_t * cinfo, map_t * map, field_t * colloid_map);
 int build_conservation(colloids_info_t * info, field_t * phi, psi_t * psi,
 		       const lb_model_t * model);
 

@@ -43,6 +43,7 @@ struct physics_s {
   double b0[3];        /* External magnetic field */
   double fgravity[3];  /* Gravitational force (on objects) */
   double mobility;     /* Order parameter mobility (binary fluid) */
+  double kappa_degr;
 
   int t_start;         /* Start time step requested */
   int nsteps;          /* Number of time steps requested by user */
@@ -543,6 +544,23 @@ __host__ __device__ int physics_mobility(physics_t * phys, double * mobility) {
 
 /*****************************************************************************
  *
+ *  physics_kappa_degr
+ *
+ *****************************************************************************/
+
+__host__ __device__ int physics_kappa_degr(physics_t * phys, double * kappa_degr) {
+
+  assert(phys);
+  assert(kappa_degr);
+
+  *kappa_degr = phys->kappa_degr;
+ 
+  return 0;
+}
+
+
+/*****************************************************************************
+ *
  *  physics_mobility_set
  *
  *****************************************************************************/
@@ -592,6 +610,22 @@ __host__ int physics_fgrav_set(physics_t * phys, double g[3]) {
 
 /*****************************************************************************
  *
+ *  physics_kappa_degr_set
+ *
+ *****************************************************************************/
+
+__host__ int physics_kappa_degr_set(physics_t * phys, double kappa_degr) {
+
+  assert(kappa_degr);
+
+  phys->kappa_degr = kappa_degr;
+
+  return 0;
+}
+
+
+/*****************************************************************************
+ *
  *  physics_grad_mu - added for externally imposed chemical potential gradient
  *
  *****************************************************************************/
@@ -599,8 +633,7 @@ __host__ int physics_fgrav_set(physics_t * phys, double g[3]) {
 __host__ __device__ int physics_grad_mu(physics_t * phys, double gm[3]) {
 
   assert(phys);
-
-  gm[0] = phys->grad_mu[0];
+gm[0] = phys->grad_mu[0];
   gm[1] = phys->grad_mu[1];
   gm[2] = phys->grad_mu[2];
 
