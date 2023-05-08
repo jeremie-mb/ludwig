@@ -65,6 +65,7 @@
 #include "symmetric_rt.h"
 #include "brazovskii_rt.h"
 #include "surfactant_rt.h"
+#include "double_symmetric_rt.h"
 #include "polar_active_rt.h"
 #include "blue_phase_rt.h"
 #include "lc_droplet_rt.h"
@@ -138,6 +139,7 @@ struct ludwig_s {
   field_t * phi;            /* Scalar order parameter */
   field_t * p;              /* Vector order parameter */
   field_t * q;              /* Tensor order parameter */
+  field_t * colloid_map;    /* Colloid map */
   field_grad_t * phi_grad;  /* Gradients for phi */
   field_grad_t * p_grad;    /* Gradients for p */
   field_grad_t * q_grad;    /* Gradients for q */
@@ -156,6 +158,7 @@ struct ludwig_s {
   pth_t * pth;                 /* Thermodynamic stress/force calculation */
   fe_lc_t * fe_lc;             /* LC free energy */
   fe_symm_t * fe_symm;         /* Symmetric free energy */
+  fe_double_symmetric_t * fe_double_symmetric;         /* Symmetric free energy */
   fe_surf_t * fe_surf;         /* Surfactant (van der Graf etc) */
   fe_ternary_t * fe_ternary;   /* Ternary (Semprebon et al.) */
   fe_brazovskii_t * fe_braz;   /* Brazovskki */
@@ -263,6 +266,7 @@ static int ludwig_rt(ludwig_t * ludwig) {
   if (ludwig->phi) field_init_io_info(ludwig->phi, io_grid, form, form);
   if (ludwig->p) field_init_io_info(ludwig->p, io_grid, form, form);
   if (ludwig->q) field_init_io_info(ludwig->q, io_grid, form, form);
+  if (ludwig->colloid_map) field_init_io_info(ludwig->colloid_map, io_grid, form, form);
 
   if (ludwig->phi || ludwig->p || ludwig->q) {
     const char * value = ""; /* BLANK appeared in old output */
@@ -289,6 +293,10 @@ static int ludwig_rt(ludwig_t * ludwig) {
     fe_surf_phi_init_rt(pe, rt, ludwig->fe_surf, ludwig->phi);
     fe_surf_psi_init_rt(pe, rt, ludwig->fe_surf, ludwig->phi);
   }
+  if (ludwig->fe_double_symmetric) {
+    fe_double_symmetric_phi_init_rt(pe, rt, ludwig->fe_double_symmetric, ludwig->phi);
+    fe_double_symmetric_psi_init_rt(pe, rt, ludwig->fe_double_symmetric, ludwig->phi);
+  }
   if (ludwig->fe_ternary) {
     fe_ternary_init_rt(pe, rt, ludwig->fe_ternary, ludwig->phi);
   }
@@ -302,7 +310,7 @@ static int ludwig_rt(ludwig_t * ludwig) {
   wall_rt_init(pe, cs, rt, ludwig->lb, ludwig->map, &ludwig->wall);
   colloids_init_rt(pe, rt, cs, &ludwig->collinfo, &ludwig->cio,
 		   &ludwig->interact, ludwig->wall, ludwig->map,
-		   &ludwig->lb->model);
+		   &ludwig->lb->model, ludwig->colloid_map);
   colloids_init_ewald_rt(pe, rt, cs, ludwig->collinfo, &ludwig->ewald);
 
   bbl_create(pe, ludwig->cs, ludwig->lb, &ludwig->bbl);
@@ -352,6 +360,12 @@ static int ludwig_rt(ludwig_t * ludwig) {
       io_event_t event = {0};
       pe_info(pe, "Reading q_ab files for step %d\n", ntstep);
       field_io_read(ludwig->q, ntstep, &event);
+    }
+
+    if (ludwig->colloid_map) {
+      io_event_t event = {0};
+      pe_info(pe, "Reading colloid map files for step %d\n", ntstep);
+      field_io_read(ludwig->colloid_map, ntstep, &event);
     }
 
     if (ludwig->hydro) {
@@ -430,6 +444,7 @@ static int ludwig_rt(ludwig_t * ludwig) {
     }
   }
 
+  bbl_run_time(rt);
   return 0;
 }
 
@@ -513,6 +528,7 @@ void ludwig_run(const char * inputfile) {
   if (ludwig->phi) field_memcpy(ludwig->phi, tdpMemcpyHostToDevice);
   if (ludwig->p)   field_memcpy(ludwig->p, tdpMemcpyHostToDevice);
   if (ludwig->q)   field_memcpy(ludwig->q, tdpMemcpyHostToDevice);
+  if (ludwig->colloid_map)   field_memcpy(ludwig->colloid_map, tdpMemcpyHostToDevice);
 
   /* Lap timer: include initial statistics in first trip */
   TIMER_start(TIMER_LAP);
@@ -587,18 +603,19 @@ void ludwig_run(const char * inputfile) {
 
       TIMER_start(TIMER_PHI_HALO);
       field_halo(ludwig->phi);
+      field_halo(ludwig->colloid_map);
       TIMER_stop(TIMER_PHI_HALO);
 
       /* Boundary conditions on phi after halo and
        * before gradient calculation. */
 
       if (ludwig->phi_inflow) {
-	phi_bc_open_t * inflow = ludwig->phi_inflow;
-	inflow->func->update(inflow, ludwig->phi);
+	      phi_bc_open_t * inflow = ludwig->phi_inflow;
+	      inflow->func->update(inflow, ludwig->phi);
       }
       if (ludwig->phi_outflow) {
-	phi_bc_open_t * outflow = ludwig->phi_outflow;
-	outflow->func->update(outflow, ludwig->phi);
+	      phi_bc_open_t * outflow = ludwig->phi_outflow;
+	      outflow->func->update(outflow, ludwig->phi);
       }
 
       field_grad_compute(ludwig->phi_grad);
@@ -639,19 +656,19 @@ void ludwig_run(const char * inputfile) {
       /* Poisson solve */
 
       if (step % psi_skipsteps(ludwig->psi) == 0){
-	TIMER_start(TIMER_ELECTRO_POISSON);
-#ifdef PETSC
-	psi_petsc_solve(ludwig->psi, ludwig->fe, ludwig->epsilon);
-#else
-	psi_sor_solve(ludwig->psi, ludwig->fe, ludwig->epsilon, step);
-#endif
-	TIMER_stop(TIMER_ELECTRO_POISSON);
+	      TIMER_start(TIMER_ELECTRO_POISSON);
+        #ifdef PETSC
+	      psi_petsc_solve(ludwig->psi, ludwig->fe, ludwig->epsilon);
+        #else
+	      psi_sor_solve(ludwig->psi, ludwig->fe, ludwig->epsilon, step);
+        #endif
+	      TIMER_stop(TIMER_ELECTRO_POISSON);
       }
 
       if (ludwig->hydro) {
-	TIMER_start(TIMER_HALO_LATTICE);
-	hydro_u_halo(ludwig->hydro);
-	TIMER_stop(TIMER_HALO_LATTICE);
+	      TIMER_start(TIMER_HALO_LATTICE);
+	      hydro_u_halo(ludwig->hydro);
+	      TIMER_stop(TIMER_HALO_LATTICE);
       }
 
       /* Time splitting for high electrokinetic diffusions in Nernst Planck */
@@ -660,54 +677,52 @@ void ludwig_run(const char * inputfile) {
       
       for (im = 0; im < multisteps; im++) {
 
-	TIMER_start(TIMER_HALO_LATTICE);
-	psi_halo_psi(ludwig->psi);
-	psi_halo_psijump(ludwig->psi);
-	psi_halo_rho(ludwig->psi);
-	TIMER_stop(TIMER_HALO_LATTICE);
+	      TIMER_start(TIMER_HALO_LATTICE);
+	      psi_halo_psi(ludwig->psi);
+	      psi_halo_psijump(ludwig->psi);
+	      psi_halo_rho(ludwig->psi);
+	      TIMER_stop(TIMER_HALO_LATTICE);
 
-	/* Force calculation is only once per LB timestep */
-	if (im == 0) {
+	      /* Force calculation is only once per LB timestep */
+	      if (im == 0) {
 
-	  TIMER_start(TIMER_FORCE_CALCULATION);
-	  psi_force_method(ludwig->psi, &flag);
+	        TIMER_start(TIMER_FORCE_CALCULATION);
+	        psi_force_method(ludwig->psi, &flag);
 
           /* Force input as gradient of chemical potential 
                  with integrated momentum correction       */
-	  if (flag == PSI_FORCE_GRADMU) {
-	    psi_force_gradmu(ludwig->psi, ludwig->fe, ludwig->phi,
+	      if (flag == PSI_FORCE_GRADMU) {
+	        psi_force_gradmu(ludwig->psi, ludwig->fe, ludwig->phi,
 			     ludwig->hydro,
 			     ludwig->map, ludwig->collinfo);
-	  }
+	      }
 
           /* Force calculation as divergence of stress tensor */
-	  if (flag == PSI_FORCE_DIVERGENCE) {
-	    psi_force_divstress_d3qx(ludwig->psi, ludwig->fe, ludwig->hydro,
+	      if (flag == PSI_FORCE_DIVERGENCE) {
+	        psi_force_divstress_d3qx(ludwig->psi, ludwig->fe, ludwig->hydro,
 				  ludwig->map, ludwig->collinfo);
-	  }
-	  TIMER_stop(TIMER_FORCE_CALCULATION);
+	      }
+	      TIMER_stop(TIMER_FORCE_CALCULATION);
 
-	}
+	    }
 
-	TIMER_start(TIMER_ELECTRO_NPEQ);
-	nernst_planck_driver_d3qx(ludwig->psi, ludwig->fe, ludwig->hydro,
+	    TIMER_start(TIMER_ELECTRO_NPEQ);
+	    nernst_planck_driver_d3qx(ludwig->psi, ludwig->fe, ludwig->hydro,
 				  ludwig->map, ludwig->collinfo);
-	TIMER_stop(TIMER_ELECTRO_NPEQ);
+	    TIMER_stop(TIMER_ELECTRO_NPEQ);
 
-      }
+    }
       
-      TIMER_start(TIMER_HALO_LATTICE);
-      psi_halo_psi(ludwig->psi);
-      psi_halo_psijump(ludwig->psi);
-      psi_halo_rho(ludwig->psi);
-      TIMER_stop(TIMER_HALO_LATTICE);
+    TIMER_start(TIMER_HALO_LATTICE);
+    psi_halo_psi(ludwig->psi);
+    psi_halo_psijump(ludwig->psi);
+    psi_halo_rho(ludwig->psi);
+    TIMER_stop(TIMER_HALO_LATTICE);
     
-      nernst_planck_adjust_multistep(ludwig->psi);
+    nernst_planck_adjust_multistep(ludwig->psi);
 
-      if (is_statistics_step()) pe_info(ludwig->pe, "%d multisteps\n",im);
-
-      psi_zero_mean(ludwig->psi);
-
+    if (is_statistics_step()) pe_info(ludwig->pe, "%d multisteps\n",im);
+    psi_zero_mean(ludwig->psi);
     }
 
     /* order parameter dynamics (not if symmetric_lb) */
@@ -724,27 +739,27 @@ void ludwig_run(const char * inputfile) {
 	/* Force in electrokinetic models is computed above */
       }
       else {
-	if (ncolloid == 0) {
+	      if (ncolloid == 0) {
 
 	  /* LC-droplet requires partial body force input and momentum
            * correction. This correction, via hydro_correct_momentum(),
            * should not include the contributions from the divergence
            * of the stress, so is done before phi_force_calculation(). */
 
-	  if (ludwig->fe && ludwig->fe->id == FE_LC_DROPLET) {
+	        if (ludwig->fe && ludwig->fe->id == FE_LC_DROPLET) {
 
-	    fe_lc_droplet_t * fe = (fe_lc_droplet_t *) ludwig->fe;
+	          fe_lc_droplet_t * fe = (fe_lc_droplet_t *) ludwig->fe;
 
-	    if (wall_present(ludwig->wall)) {
-	      fe_lc_droplet_bodyforce_wall(fe, ludwig->le, ludwig->hydro, 
+	          if (wall_present(ludwig->wall)) {
+	            fe_lc_droplet_bodyforce_wall(fe, ludwig->le, ludwig->hydro, 
 		                           ludwig->map, ludwig->wall);
-	    }
-	    else {
-	      fe_lc_droplet_bodyforce(fe, ludwig->hydro);
-	    }
+	          }
+	          else {
+	            fe_lc_droplet_bodyforce(fe, ludwig->hydro);
+	          }
 
-	    hydro_correct_momentum(ludwig->hydro);
-	  }
+	          hydro_correct_momentum(ludwig->hydro);
+	        }
 
 	  /* Force calculation as divergence of stress tensor */
 
@@ -753,27 +768,27 @@ void ludwig_run(const char * inputfile) {
                                 ludwig->pth, ludwig->fe, ludwig->map,
                                 ludwig->phi, ludwig->hydro);
 
-	  /* Ternary free energy gradmu requires of momentum correction
+	        /* Ternary free energy gradmu requires of momentum correction
 	     after force calculation */
 
-	  if (ludwig->fe && ludwig->hydro && ludwig->fe->id == FE_TERNARY) {
+	        if (ludwig->fe && ludwig->hydro && ludwig->fe->id == FE_TERNARY) {
             hydro_correct_momentum(ludwig->hydro);
-	  }
+	        }
 
-	}
-	else {
-	  if (ludwig->pth->method == FE_FORCE_METHOD_STRESS_DIVERGENCE) {
-	  pth_force_colloid(ludwig->pth, ludwig->fe, ludwig->collinfo,
+	      }
+	      else {
+	        if (ludwig->pth->method == FE_FORCE_METHOD_STRESS_DIVERGENCE) {
+	          pth_force_colloid(ludwig->pth, ludwig->fe, ludwig->collinfo,
 			    ludwig->hydro, ludwig->map, ludwig->wall,
 			    &ludwig->lb->model);
-	  }
-	  else {
-	    /* Allow case with colloids using PHI_GRADMU_CORRECTION */
-	    phi_force_calculation(ludwig->pe, ludwig->cs, ludwig->le,
-				  ludwig->wall, ludwig->pth, ludwig->fe,
-				  ludwig->map, ludwig->phi, ludwig->hydro);
-	  }
-	}
+	        }
+	        else {
+	          /* Allow case with colloids using PHI_GRADMU_CORRECTION */
+	          phi_force_calculation(ludwig->pe, ludwig->cs, ludwig->le,
+				    ludwig->wall, ludwig->pth, ludwig->fe,
+				    ludwig->map, ludwig->phi, ludwig->hydro);
+	        }
+	      }
       }
 
       TIMER_stop(TIMER_FORCE_CALCULATION);
@@ -872,7 +887,7 @@ void ludwig_run(const char * inputfile) {
 
       subgrid_update(ludwig->collinfo, ludwig->hydro, noise_flag);
       bounce_back_on_links(ludwig->bbl, ludwig->lb, ludwig->wall,
-			   ludwig->collinfo);
+			   ludwig->collinfo, ludwig->phi);
       wall_bbl(ludwig->wall);
       TIMER_stop(TIMER_BBL);
     }
@@ -950,6 +965,16 @@ void ludwig_run(const char * inputfile) {
 	pe_info(ludwig->pe, "Writing psi file at step %d!\n", step);
 	sprintf(filename,"%spsi-%8.8d", subdirectory, step);
 	io_write_data(iohandler, filename, ludwig->psi);
+      }
+    }
+
+    if (is_colloid_map_output_step() || is_config_step()) {
+
+      if (ludwig->colloid_map) {
+	io_event_t event = {0};
+	pe_info(ludwig->pe, "Writing colloid_map file at step %d!\n", step);
+	field_memcpy(ludwig->colloid_map, tdpMemcpyDeviceToHost);
+	field_io_write(ludwig->colloid_map, step, &event);
       }
     }
 
@@ -1088,6 +1113,7 @@ void ludwig_run(const char * inputfile) {
   if (ludwig->phi)      field_free(ludwig->phi);
   if (ludwig->p)        field_free(ludwig->p);
   if (ludwig->q)        field_free(ludwig->q);
+  if (ludwig->colloid_map)      field_free(ludwig->colloid_map);
 
   bbl_free(ludwig->bbl);
   colloids_info_free(ludwig->collinfo);
@@ -1285,6 +1311,14 @@ int free_energy_init_rt(ludwig_t * ludwig) {
       field_create(pe, cs, le, "phi", &opts, &ludwig->phi);
       field_grad_create(pe, ludwig->phi, ngrad, &ludwig->phi_grad);
     }
+
+    {
+      field_options_t opts = field_options_ndata_nhalo(1, 0);
+      io_info_args_rt(rt, RT_FATAL, "colloid_map", IO_INFO_READ_WRITE, &opts.iodata);
+      field_create(pe, cs, le, "colloid_map", &opts, &ludwig->colloid_map);
+    }
+
+
 
     pe_info(pe, "\n");
     pe_info(pe, "Free energy details\n");
@@ -1524,6 +1558,83 @@ int free_energy_init_rt(ludwig_t * ludwig) {
     ludwig->fe_surf = fe;
     ludwig->fe = (fe_t *) fe;
     
+  }
+
+  else if (strcmp(description, "double_symmetric") == 0) {
+
+    fe_double_symmetric_param_t param;
+    ch_info_t options = {0};
+    fe_double_symmetric_t * fe = NULL;
+
+    nf = 2;       /* Composition: "phi" and "psi" */
+    nhalo = 2;
+    ngrad = 2;
+
+    cs_nhalo_set(cs, nhalo);
+    coords_init_rt(pe, rt, cs);
+
+    /* No Lees Edwards for the time being */
+
+    {
+      field_options_t opts = field_options_ndata_nhalo(nf, nhalo);
+      field_create(pe, cs, NULL, "phi", &opts, &ludwig->phi);
+    }
+
+    field_grad_create(pe, ludwig->phi, ngrad, &ludwig->phi_grad);
+
+    pe_info(pe, "\n");
+    pe_info(pe, "Double symmetric free energy\n");
+    pe_info(pe, "----------------------\n");
+
+    fe_double_symmetric_param_rt(pe, rt, &param);
+    fe_double_symmetric_create(pe, cs, ludwig->phi, ludwig->phi_grad, param, &fe);
+    fe_double_symmetric_info(fe);
+
+    grad_3d_27pt_solid_double_symmetric_fe_set(fe);
+
+    /* Cahn Hilliard */
+
+    options.nfield = nf;
+
+    n = rt_double_parameter(rt, "phi_mobility", &options.mobility[0]);
+    if (n == 0) pe_fatal(pe, "Please set phi_mobility in the input\n");
+
+    n = rt_double_parameter(rt, "psi_mobility", &options.mobility[1]);
+    if (n == 0) pe_fatal(pe, "Please set psi_mobiilty in the input\n");
+
+    ch_create(pe, cs, options, &ludwig->ch);
+
+    pe_info(pe, "\n");
+    pe_info(pe, "Using Cahn-Hilliard solver:\n");
+    ch_info(ludwig->ch);
+
+    /* Coupling between momentum and free energy */
+    /* Hydrodynamics sector (move to hydro_rt?) */
+    {
+      fe_force_method_enum_t method = fe_force_method_default();
+
+      fe_force_method_rt_messages(rt, RT_INFO);
+      fe_force_method_rt(rt, RT_FATAL, &method);
+
+      /* The following are possible (if not tested) */
+      switch (method) {
+      case FE_FORCE_METHOD_STRESS_DIVERGENCE:
+      case FE_FORCE_METHOD_PHI_GRADMU:
+      case FE_FORCE_METHOD_PHI_GRADMU_CORRECTION:
+	break;
+      case FE_FORCE_METHOD_RELAXATION_SYMM:
+	fe->super.use_stress_relaxation = 1;
+	break;
+      default:
+	pe_fatal(pe, "double symmetric free energy force_method not available\n");
+      }
+
+      pth_create(pe, cs, method, &ludwig->pth);
+    }
+
+    ludwig->fe_double_symmetric = fe;
+    ludwig->fe = (fe_t *) fe;
+ 
   }
   else if (strcmp(description, "ternary") == 0) {
 
@@ -2201,11 +2312,11 @@ int ludwig_colloids_update(ludwig_t * ludwig) {
 
   TIMER_start(TIMER_REBUILD);
 
-  build_update_map(ludwig->cs, ludwig->collinfo, ludwig->map);
+  build_update_map(ludwig->cs, ludwig->collinfo, ludwig->map, ludwig->colloid_map);
   build_remove_replace(ludwig->fe, ludwig->collinfo, ludwig->lb, ludwig->phi,
-		       ludwig->p, ludwig->q, ludwig->psi, ludwig->map);
+         ludwig->p, ludwig->q, ludwig->psi, ludwig->map);
   build_update_links(ludwig->cs, ludwig->collinfo, ludwig->wall, ludwig->map,
-		     &ludwig->lb->model);
+  		     &ludwig->lb->model);
 
   TIMER_stop(TIMER_REBUILD);
 

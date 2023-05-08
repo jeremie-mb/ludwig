@@ -21,7 +21,9 @@ typedef struct field_phi_info_s field_phi_info_t;
 
 struct field_phi_info_s {
   double xi0;             /* Equilibrium interfacial width */
+  double xi1;             /* Equilibrium interfacial width */
   double phi0;            /* Mean composition */
+  double psi0;            /* Mean composition */
   double phistar;         /* An amplitude (min/max order parameter) */
 };
 

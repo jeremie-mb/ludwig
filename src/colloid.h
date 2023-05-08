@@ -29,14 +29,17 @@ typedef enum colloid_io_version colloid_io_version_t;
  * useful to know to check the ASCII read/write. */
 
 #define NTOT_VAR (32+48)
-#define NPAD_INT  13
-#define NPAD_DBL  15
+#define NPAD_INT  12 /* 13 - shape */
+#define NPAD_DBL  5 /* 15 - tumbletheta - tumblephi - mu - alpha - n[3] - alpha_pacman_mn - alpha_pacman_mp - deltapsi */
 #define NBOND_MAX  2
 
 enum colloid_type_enum {COLLOID_TYPE_DEFAULT = 0,
 			COLLOID_TYPE_ACTIVE,
 			COLLOID_TYPE_SUBGRID,
 			COLLOID_TYPE_JANUS};
+
+enum colloid_shape_enum {COLLOID_SHAPE_DEFAULT = 0,
+			COLLOID_SHAPE_PACMAN};
 
 typedef enum colloid_type_enum colloid_type_enum_t;
 typedef struct colloid_state_type colloid_state_t;
@@ -54,6 +57,7 @@ struct colloid_state_type {
   int isfixeds;         /* Set to zero for no s, m update */
 
   int type;             /* Particle type */
+  int shape;             /* Particle shape */
   int bond[NBOND_MAX];  /* Bonded neighbours ids (index) */
 
   int rng;              /* Random number state */
@@ -76,13 +80,15 @@ struct colloid_state_type {
   double v[3];          /* Velocity */
   double w[3];          /* Angular velocity omega */
   double s[3];          /* Magnetic dipole, or spin */
-  double m[3];          /* Current direction of motion vector (squirmer) */
+  double m[3];          /* Primary orientation of colloid (used for building)*/
+  double n[3];          /* Secondary orientation of colloid */
   double b1;	        /* squirmer active parameter b1 */
   double b2;            /* squirmer active parameter b2 */
   double c;             /* Wetting free energy parameter C */
   double h;             /* Wetting free energy parameter H */
   double dr[3];         /* r update (pending refactor of move/build process) */
-  double deltaphi;      /* order parameter bbl net; required to restart */
+  double deltaphi;      /* used to conserve phi[0] when the colloid moves */
+  double deltapsi;      /* used to conserve phi[1] when the colloid moves */
 
   /* Charges. We allow two charge valencies (cf a general number
    * number in the electrokinetics section). q0 will be associated
@@ -101,6 +107,12 @@ struct colloid_state_type {
   double saf;           /* surface area to fluid (finite difference grid) */
 
   double al;            /* Offset parameter used for subgrid particles */
+  double tumbletheta;
+  double tumblephi;
+  double mu_phoretic;
+  double alpha_prod;
+  double alpha_pacman_mn;
+  double alpha_pacman_mp;
   double dpad[NPAD_DBL];/* Again, this pads to 512 bytes to allow
 			 * for future expansion. */
 };

@@ -36,6 +36,7 @@ struct physics_s {
   double kt;           /* Isothermal "temperature" */
   double rho0;         /* Mean fluid density */
   double phi0;         /* Mean fluid composition (binary fluid) */
+  double psi0;
   double phi_noise0;   /* Initial order parameter noise amplitude */
   double fbody[3];     /* External body force on fluid */
   double e0[3];        /* Amplitude of external electric field */
@@ -310,6 +311,38 @@ __host__ int physics_phi0_set(physics_t * phys, double phi0) {
 
 /*****************************************************************************
  *
+ *  physics_psi0
+ *
+ *****************************************************************************/
+
+__host__ __device__ int physics_psi0(physics_t * phys, double * psi0) {
+
+  assert(phys);
+  assert(psi0);
+
+  *psi0 = phys->psi0;
+
+  return 0;
+}
+
+/*****************************************************************************
+ *
+ *  physics_psi0_set
+ *
+ *****************************************************************************/
+
+__host__ int physics_psi0_set(physics_t * phys, double psi0) {
+
+  assert(phys);
+
+  phys->psi0 = psi0;
+
+  return 0;
+}
+
+
+/*****************************************************************************
+ *
  *  physics_b0
  *
  *****************************************************************************/
@@ -541,6 +574,7 @@ __host__ __device__ int physics_mobility(physics_t * phys, double * mobility) {
   return 0;
 }
 
+
 /*****************************************************************************
  *
  *  physics_mobility_set
@@ -590,6 +624,7 @@ __host__ int physics_fgrav_set(physics_t * phys, double g[3]) {
   return 0;
 }
 
+
 /*****************************************************************************
  *
  *  physics_grad_mu - added for externally imposed chemical potential gradient
@@ -599,8 +634,7 @@ __host__ int physics_fgrav_set(physics_t * phys, double g[3]) {
 __host__ __device__ int physics_grad_mu(physics_t * phys, double gm[3]) {
 
   assert(phys);
-
-  gm[0] = phys->grad_mu[0];
+gm[0] = phys->grad_mu[0];
   gm[1] = phys->grad_mu[1];
   gm[2] = phys->grad_mu[2];
 

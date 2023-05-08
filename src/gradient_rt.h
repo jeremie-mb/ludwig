@@ -27,7 +27,7 @@
 #include "gradient_3d_27pt_solid.h"
 #include "gradient_2d_ternary_solid.h"
 #include "gradient_3d_ternary_solid.h"
-
+#include "gradient_3d_27pt_solid_double_symmetric.h"
 
 #include "gradient_s7_anchoring.h"
 

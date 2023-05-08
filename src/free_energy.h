@@ -25,15 +25,16 @@
 #include "memory.h"
 
 enum fe_id_enum {FE_NULL,
-                 FE_SYMMETRIC,
+     FE_SYMMETRIC,
 		 FE_BRAZOVSKII,
-                 FE_SURFACTANT,
+     FE_SURFACTANT,
 		 FE_POLAR,
 		 FE_LC,
 		 FE_ELECTRO,
 		 FE_ELECTRO_SYMMETRIC,
 		 FE_LC_DROPLET,
-                 FE_TERNARY};
+     FE_TERNARY,
+     FE_DOUBLE_SYMMETRIC};
 
 typedef struct fe_s fe_t;
 typedef struct fe_vt_s fe_vt_t;
