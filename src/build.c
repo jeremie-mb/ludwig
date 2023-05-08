@@ -308,6 +308,7 @@ int build_update_map(cs_t * cs, colloids_info_t * cinfo, map_t * map, field_t * 
         /* Set index */
 	      index = cs_index(cs, i, j, k);
 
+        colloid_map->data[addr_rank0(colloid_map->nsites, index)] = 1.0;
         colloids_info_map_set(cinfo, index, p_colloid);
         map_status_set(map, index, MAP_COLLOID);
 
