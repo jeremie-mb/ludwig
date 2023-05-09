@@ -62,6 +62,7 @@
 #include "phi_force_stress.h"
 #include "phi_force_colloid.h"
 #include "timer.h"
+#include "phi_grad_mu.h"
 
 int pth_force_driver(pth_t * pth, colloids_info_t * cinfo,
 		     hydro_t * hydro, map_t * map, wall_t * wall,
@@ -85,7 +86,7 @@ __global__ void pth_force_fluid_kernel_v(kernel_ctxt_t * ktx, pth_t * pth,
 
 __host__ int pth_force_colloid(pth_t * pth, fe_t * fe, colloids_info_t * cinfo,
 			       hydro_t * hydro, map_t * map, wall_t * wall,
-			       const lb_model_t * model) {
+			       const lb_model_t * model, field_t * colloid_map, rt_t * rt, field_t * phi) {
 
   int ncolloid;
 
@@ -99,6 +100,8 @@ __host__ int pth_force_colloid(pth_t * pth, fe_t * fe, colloids_info_t * cinfo,
     pth_stress_compute(pth, fe);
     pth_force_driver(pth, cinfo, hydro, map, wall, model);
   }
+
+  phi_grad_mu_external_ll(phi, hydro, colloid_map, rt);
 
   return 0;
 }

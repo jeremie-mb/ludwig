@@ -22,12 +22,14 @@
 #include "hydro.h"
 #include "map.h"
 #include "wall.h"
+#include "field.h"
+#include "runtime.h"
 
 __host__ int pth_force_fluid_driver(pth_t * pth, hydro_t * hydro);
 __host__ int pth_force_fluid_wall_driver(pth_t * pth, hydro_t * hydro,
 					 map_t * map, wall_t * wall);
 __host__ int pth_force_colloid(pth_t * pth, fe_t * fe, colloids_info_t * cinfo,
 			       hydro_t * hydro, map_t * map, wall_t * wall,
-			       const lb_model_t * model);
+			       const lb_model_t * model, field_t * colloid_map, rt_t * rt, field_t * phi);
 
 #endif

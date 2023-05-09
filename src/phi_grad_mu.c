@@ -40,6 +40,12 @@ __global__ void phi_grad_mu_correction_kernel(kernel_ctxt_t * ktx,
 __global__ void phi_grad_mu_force_kernel(kernel_ctxt_t * ktx, hydro_t * hydro,
 					 map_t * map, double3 fcorrect);
 
+__global__ void phi_grad_mu_external_ll_kernel(kernel_ctxt_t * ktx, field_t * phi,
+              double3 grad_mu_phi, double3 grad_mu_psi, hydro_t * hydro);
+
+__global__ void phi_grad_mu_external_ll_outside_colloid_only_kernel(kernel_ctxt_t * ktx, field_t * phi, double3 grad_mu_phi, double3 grad_mu_psi, hydro_t * hydro, field_t * colloid_map);
+
+
 /*****************************************************************************
  *
  *  phi_grad_mu_fluid
@@ -781,3 +787,216 @@ __global__ void phi_grad_mu_force_kernel(kernel_ctxt_t * ktx, hydro_t * hydro,
 
   return;
 }
+
+/*****************************************************************************
+ *
+ *  phi_grad_mu_external_ll
+ *
+ *  Driver to accumulate the force originating from external chemical
+ *  potential gradient.
+ *
+ *****************************************************************************/
+
+__host__ int phi_grad_mu_external_ll(field_t * phi, hydro_t * hydro, field_t * colloid_map, rt_t * rt) {
+
+  int nlocal[3];
+  int is_grad_mu_phi = 0;     /* Short circuit the kernel if not required. */
+  int is_grad_mu_psi = 0;     /* Short circuit the kernel if not required. */
+  int ext_grad_mu_psi_outside_colloid_only;
+
+  dim3 nblk, ntpb;
+  double3 grad_mu_phi = {};
+  double3 grad_mu_psi = {};
+
+  kernel_info_t limits;
+  kernel_ctxt_t * ctxt = NULL;
+
+  assert(phi);
+  assert(hydro);
+
+  cs_nlocal(phi->cs, nlocal);
+  {
+    physics_t * phys = NULL;
+    double gmu_phi[3] = {};
+    double gmu_psi[3] = {};
+
+    physics_ref(&phys);
+    physics_ext_grad_mu_phi(phys, gmu_phi);
+    physics_ext_grad_mu_psi(phys, gmu_psi);
+
+    grad_mu_phi.x = gmu_phi[X];
+    grad_mu_phi.y = gmu_phi[Y];
+    grad_mu_phi.z = gmu_phi[Z];
+
+    grad_mu_psi.x = gmu_psi[X];
+    grad_mu_psi.y = gmu_psi[Y];
+    grad_mu_psi.z = gmu_psi[Z];
+
+    is_grad_mu_phi = (gmu_phi[X] != 0.0 || gmu_phi[Y] != 0.0 || gmu_phi[Z] != 0.0);
+    is_grad_mu_psi = (gmu_psi[X] != 0.0 || gmu_psi[Y] != 0.0 || gmu_psi[Z] != 0.0);
+  }
+
+  /* We may need to revisit the external chemical potential if required
+   * for more than one order parameter. */
+
+  if ((is_grad_mu_phi || is_grad_mu_psi) && phi->nf == 2) {
+
+    rt_int_parameter(rt, "ext_grad_mu_psi_outside_colloid_only", &ext_grad_mu_psi_outside_colloid_only);
+    if (ext_grad_mu_psi_outside_colloid_only ) {
+
+      limits.imin = 1; limits.imax = nlocal[X];
+      limits.jmin = 1; limits.jmax = nlocal[Y];
+      limits.kmin = 1; limits.kmax = nlocal[Z];
+
+      kernel_ctxt_create(phi->cs, 1, limits, &ctxt);
+      kernel_ctxt_launch_param(ctxt, &nblk, &ntpb);
+
+      tdpLaunchKernel(phi_grad_mu_external_ll_outside_colloid_only_kernel, nblk, ntpb, 0, 0,
+        ctxt->target, phi->target, grad_mu_phi, grad_mu_psi, hydro->target, colloid_map->target);
+
+      tdpAssert(tdpPeekAtLastError());
+      tdpAssert(tdpDeviceSynchronize());
+
+      kernel_ctxt_free(ctxt);
+
+    }
+    else {
+
+      limits.imin = 1; limits.imax = nlocal[X];
+      limits.jmin = 1; limits.jmax = nlocal[Y];
+      limits.kmin = 1; limits.kmax = nlocal[Z];
+
+      kernel_ctxt_create(phi->cs, 1, limits, &ctxt);
+      kernel_ctxt_launch_param(ctxt, &nblk, &ntpb);
+
+      tdpLaunchKernel(phi_grad_mu_external_ll_kernel, nblk, ntpb, 0, 0,
+        ctxt->target, phi->target, grad_mu_phi, grad_mu_psi, hydro->target);
+
+      tdpAssert(tdpPeekAtLastError());
+      tdpAssert(tdpDeviceSynchronize());
+
+      kernel_ctxt_free(ctxt);
+    }
+  }
+
+  return 0;
+}
+
+/*****************************************************************************
+ *
+ *  phi_grad_mu_external_ll_kernel
+ *
+ *  Accumulate local force resulting from constant external chemical
+ *  potential gradient.
+ *
+ *****************************************************************************/
+
+__global__ void phi_grad_mu_external_ll_kernel(kernel_ctxt_t * ktx, field_t * phi,
+              double3 grad_mu_phi, double3 grad_mu_psi,
+            hydro_t * hydro) {
+
+  int kiterations;
+  int kindex;
+  double total_force[3] = {0.0, 0.0, 0.0};
+  double total_force_global[3] = {0.0, 0.0, 0.0};
+  int rank;
+  MPI_Comm comm;
+  cs_cart_comm(hydro->cs, &comm);
+  MPI_Comm_rank(comm, &rank);
+
+  assert(ktx);
+  assert(phi);
+  assert(hydro);
+
+  kiterations = kernel_iterations(ktx);
+
+  for_simt_parallel(kindex, kiterations, 1) {
+
+    int ic    = kernel_coords_ic(ktx, kindex);
+    int jc    = kernel_coords_jc(ktx, kindex);
+    int kc    = kernel_coords_kc(ktx, kindex);
+    int index = kernel_coords_index(ktx, ic, jc, kc);
+
+    double force[3] = {};
+    double phi0 = phi->data[addr_rank1(phi->nsites, 2, index, 0)];
+    double psi0 = phi->data[addr_rank1(phi->nsites, 2, index, 1)];
+
+    force[X] = -phi0*grad_mu_phi.x - psi0*grad_mu_psi.x;
+    total_force[X] += force[X];
+
+    force[Y] = -phi0*grad_mu_phi.y - psi0*grad_mu_psi.y;
+    total_force[Y] += force[Y];
+
+    force[Z] = -phi0*grad_mu_phi.z - psi0*grad_mu_psi.z;
+    total_force[Z] += force[Z];
+
+    hydro_f_local_add(hydro, index, force);
+  }
+
+  //MPI_Reduce(&total_force, &total_force_global, 3, MPI_DOUBLE, MPI_SUM, 0, comm);
+  //printf("total force from grad mu = %f %f %f\n", total_force_global[X], total_force_global[Y], total_force_global[Z]);
+
+  return;
+}
+
+/*****************************************************************************
+ *
+ *  phi_grad_mu_external_ll_outside_vesicle_only_kernel
+ *
+ *  Accumulate local force resulting from constant external chemical
+ *  potential gradient.
+ *
+ *****************************************************************************/
+
+__global__ void phi_grad_mu_external_ll_outside_colloid_only_kernel(kernel_ctxt_t * ktx, field_t * phi,
+              double3 grad_mu_phi, double3 grad_mu_psi,
+            hydro_t * hydro, field_t * colloid_map) {
+
+  int rank;
+  MPI_Comm comm;
+  cs_cart_comm(hydro->cs, &comm);
+  MPI_Comm_rank(comm, &rank);
+
+  int kiterations;
+  int kindex;
+
+  double total_force[3] = {0.0, 0.0, 0.0};
+  double total_force_global[3] = {0.0, 0.0, 0.0};
+  assert(ktx);
+  assert(phi);
+  assert(hydro);
+
+  kiterations = kernel_iterations(ktx);
+
+  for_simt_parallel(kindex, kiterations, 1) {
+
+    int ic    = kernel_coords_ic(ktx, kindex);
+    int jc    = kernel_coords_jc(ktx, kindex);
+    int kc    = kernel_coords_kc(ktx, kindex);
+    int index = kernel_coords_index(ktx, ic, jc, kc);
+    int indexm1 = kernel_coords_index(ktx, ic, jc - 1, kc);
+    int indexp1 = kernel_coords_index(ktx, ic, jc + 1, kc);
+
+    double force[3] = {};
+    double phi0 = phi->data[addr_rank1(phi->nsites, 2, index, 0)];
+    double psi0 = phi->data[addr_rank1(phi->nsites, 2, index, 1)];
+
+    if ((int) colloid_map->data[addr_rank1(colloid_map->nsites, 1, index, 0)] == 0) {
+      force[X] = -phi0*grad_mu_phi.x - psi0*grad_mu_psi.x;
+      total_force[X] += force[X];
+
+      force[Y] = -phi0*grad_mu_phi.y - psi0*grad_mu_psi.y;
+      total_force[Y] += force[Y];
+
+      force[Z] = -phi0*grad_mu_phi.z - psi0*grad_mu_psi.z;
+      total_force[Z] += force[Z];
+
+      hydro_f_local_add(hydro, index, force);
+    }
+  }
+
+  //MPI_Reduce(&total_force, &total_force_global, 3, MPI_DOUBLE, MPI_SUM, 0, comm);
+  //printf("total force from grad mu = %f %f %f\n", total_force_global[X], total_force_global[Y], total_force_global[Z]);
+  return;
+}
+     

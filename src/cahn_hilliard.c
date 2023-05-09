@@ -35,6 +35,7 @@
 
 __host__ int ch_update_forward_step(ch_t * ch, field_t * phif);
 __host__ int ch_flux_mu1(ch_t * ch, fe_t * fe);
+__host__ int ch_flux_mu_ext(ch_t * ch, field_t * colloid_map, int outside_only);
 
 __global__ void ch_flux_mu1_kernel(kernel_ctxt_t * ktx, ch_t * ch, fe_t * fe,
 				   ch_info_t info);
@@ -42,6 +43,9 @@ __global__ void ch_update_kernel_2d(kernel_ctxt_t * ktx, ch_t * ch,
 				    field_t * field, ch_info_t info, int xs, int ys);
 __global__ void ch_update_kernel_3d(kernel_ctxt_t * ktx, ch_t * ch,
 				    field_t * field, ch_info_t info, int xs, int ys);
+__global__ void ch_flux_mu_ext_kernel(kernel_ctxt_t * ktx, ch_t * ch,
+            ch_info_t info, field_t * colloid_map, int outside_only);
+  
 
 /*****************************************************************************
  *
@@ -172,11 +176,12 @@ __host__ int ch_info_set(ch_t * ch, ch_info_t info) {
  *****************************************************************************/
 
 __host__ int ch_solver(ch_t * ch, fe_t * fe, field_t * phi, hydro_t * hydro,
-		       map_t * map) {
+		       map_t * map, rt_t * rt, field_t * colloid_map) {
 
   assert(ch);
   assert(fe);
   assert(phi);
+  int outside_only;
 
   /* Compute any advective fluxes first, then diffusive fluxes. */
 
@@ -189,6 +194,9 @@ __host__ int ch_solver(ch_t * ch, fe_t * fe, field_t * phi, hydro_t * hydro,
   }
 
   ch_flux_mu1(ch, fe);
+  rt_int_parameter(rt, "ext_grad_mu_psi_outside_vesicle_only", &outside_only);
+
+  ch_flux_mu_ext(ch, colloid_map, outside_only);
 
   if (map) advflux_cs_no_normal_flux(ch->flux, map);
   ch_update_forward_step(ch, phi);
@@ -451,3 +459,103 @@ __global__ void ch_update_kernel_3d(kernel_ctxt_t * ktx, ch_t * ch,
 
   return;
 }
+
+
+/*****************************************************************************
+ *
+ *  ch_flux_mu_ext
+ *
+ *  Kernel driver for external chemical potential gradient contribution.
+ *
+ *****************************************************************************/
+
+__host__ int ch_flux_mu_ext(ch_t * ch, field_t * colloid_map, int outside_only) {
+
+  int nlocal[3];
+  dim3 nblk, ntpb;
+  kernel_info_t limits;
+
+  kernel_ctxt_t * ctxt = NULL;
+
+  assert(ch);
+  cs_nlocal(ch->cs, nlocal);
+
+  limits.imin = 0; limits.imax = nlocal[X];
+  limits.jmin = 0; limits.jmax = nlocal[Y];
+  limits.kmin = 0; limits.kmax = nlocal[Z];
+
+  kernel_ctxt_create(ch->cs, 1, limits, &ctxt);
+  kernel_ctxt_launch_param(ctxt, &nblk, &ntpb);
+
+  tdpLaunchKernel(ch_flux_mu_ext_kernel, nblk, ntpb, 0, 0,
+                  ctxt->target, ch->target, *ch->info, colloid_map->target, outside_only);
+  tdpAssert(tdpPeekAtLastError());
+  tdpAssert(tdpDeviceSynchronize());
+
+  kernel_ctxt_free(ctxt);
+
+  return 0;
+}
+
+/*****************************************************************************
+ *
+ *  ch_flux_mu_ext_kernel
+ *
+ *  Accumulate contributions -m grad mu^ex from external chemical
+ *  potential gradient.
+ *
+ *****************************************************************************/
+
+__global__ void ch_flux_mu_ext_kernel(kernel_ctxt_t * ktx,
+                                          ch_t * ch,
+                                          ch_info_t info, field_t * colloid_map, int outside_only) {
+  int kindex;
+  int kiterations;
+
+  assert(ktx);
+  assert(ch->flux);
+
+  kiterations = kernel_iterations(ktx);
+
+  assert(info.nfield == ch->flux->nf);
+  //pe_verbose(ch->pe, "gradmuphi = %f %f %f \n gradmupsi = %f %f %f\n mobilities %f %f \n",
+//info.grad_mu_phi[X], info.grad_mu_phi[Y], info.grad_mu_phi[Z], info.ext_grad_mu_psi[X], info.ext_grad_mu_psi[Y], info.ext_grad_mu_psi[Z], info.mobility[0], info.mobility[1]);
+
+  for_simt_parallel(kindex, kiterations, 1) {
+
+    int ic, jc, kc;
+    int index0;
+
+    ic = kernel_coords_ic(ktx, kindex);
+    jc = kernel_coords_jc(ktx, kindex);
+    kc = kernel_coords_kc(ktx, kindex);
+
+    index0 = cs_index(ch->cs, ic, jc, kc);
+    if (outside_only) {
+      if ( (int) colloid_map->data[addr_rank0(colloid_map->nsites, index0)] == 0)
+    /* Outside of insulating vesicle */
+      {
+        ch->flux->fx[addr_rank1(ch->flux->nsite, info.nfield, index0, 0)] -= info.mobility[0]*info.ext_grad_mu_phi[X];
+        ch->flux->fy[addr_rank1(ch->flux->nsite, info.nfield, index0, 0)] -= info.mobility[0]*info.ext_grad_mu_phi[Y];
+        ch->flux->fz[addr_rank1(ch->flux->nsite, info.nfield, index0, 0)] -= info.mobility[0]*info.ext_grad_mu_phi[Z];
+
+        ch->flux->fx[addr_rank1(ch->flux->nsite, info.nfield, index0, 1)] -= info.mobility[1]*info.ext_grad_mu_psi[X];
+        ch->flux->fy[addr_rank1(ch->flux->nsite, info.nfield, index0, 1)] -= info.mobility[1]*info.ext_grad_mu_psi[Y];
+        ch->flux->fz[addr_rank1(ch->flux->nsite, info.nfield, index0, 1)] -= info.mobility[1]*info.ext_grad_mu_psi[Z];
+      }
+    }
+    else {
+      ch->flux->fx[addr_rank1(ch->flux->nsite, info.nfield, index0, 0)] -= info.mobility[0]*info.ext_grad_mu_phi[X];
+      ch->flux->fy[addr_rank1(ch->flux->nsite, info.nfield, index0, 0)] -= info.mobility[0]*info.ext_grad_mu_phi[Y];
+      ch->flux->fz[addr_rank1(ch->flux->nsite, info.nfield, index0, 0)] -= info.mobility[0]*info.ext_grad_mu_phi[Z];
+
+      ch->flux->fx[addr_rank1(ch->flux->nsite, info.nfield, index0, 1)] -= info.mobility[1]*info.ext_grad_mu_psi[X];
+      ch->flux->fy[addr_rank1(ch->flux->nsite, info.nfield, index0, 1)] -= info.mobility[1]*info.ext_grad_mu_psi[Y];
+      ch->flux->fz[addr_rank1(ch->flux->nsite, info.nfield, index0, 1)] -= info.mobility[1]*info.ext_grad_mu_psi[Z];
+    }
+  }
+
+  return;
+}
+
+

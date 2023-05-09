@@ -43,6 +43,8 @@ struct physics_s {
   double e0_frequency; /* Frequency of external electric field */ 
   double b0[3];        /* External magnetic field */
   double fgravity[3];  /* Gravitational force (on objects) */
+  double ext_grad_mu_phi[3];  /* External gradient of chemical potential for phi */
+  double ext_grad_mu_psi[3];  /* External gradient of chemical potential for psi */
   double mobility;     /* Order parameter mobility (binary fluid) */
 
   int t_start;         /* Start time step requested */
@@ -623,6 +625,79 @@ __host__ int physics_fgrav_set(physics_t * phys, double g[3]) {
 
   return 0;
 }
+
+
+/*****************************************************************************
+ *
+ *  physics_ext_grad_mu_phi
+ *
+ *****************************************************************************/
+
+__host__ __device__ int physics_ext_grad_mu_phi(physics_t * phys, double ext_grad_mu_phi[3]) {
+
+  assert(phys);
+
+  ext_grad_mu_phi[0] = phys->ext_grad_mu_phi[0];
+  ext_grad_mu_phi[1] = phys->ext_grad_mu_phi[1];
+  ext_grad_mu_phi[2] = phys->ext_grad_mu_phi[2];
+
+  return 0;
+}
+
+/*****************************************************************************
+ *
+ *  physics_ext_grad_mu_phi_set
+ *
+ *****************************************************************************/
+
+__host__ int physics_ext_grad_mu_phi_set(physics_t * phys, double ext_grad_mu_phi[3]) {
+
+  assert(phys);
+
+  phys->ext_grad_mu_phi[0] = ext_grad_mu_phi[0];
+  phys->ext_grad_mu_phi[1] = ext_grad_mu_phi[1];
+  phys->ext_grad_mu_phi[2] = ext_grad_mu_phi[2];
+
+  return 0;
+}
+
+
+
+/*****************************************************************************
+ *
+ *  physics_ext_grad_mu_psi
+ *
+ *****************************************************************************/
+
+__host__ __device__ int physics_ext_grad_mu_psi(physics_t * phys, double ext_grad_mu_psi[3]) {
+
+  assert(phys);
+
+  ext_grad_mu_psi[0] = phys->ext_grad_mu_psi[0];
+  ext_grad_mu_psi[1] = phys->ext_grad_mu_psi[1];
+  ext_grad_mu_psi[2] = phys->ext_grad_mu_psi[2];
+
+  return 0;
+}
+
+/*****************************************************************************
+ *
+ *  physics_ext_grad_mu_psi_set
+ *
+ *****************************************************************************/
+
+__host__ int physics_ext_grad_mu_psi_set(physics_t * phys, double ext_grad_mu_psi[3]) {
+
+  assert(phys);
+
+  phys->ext_grad_mu_psi[0] = ext_grad_mu_psi[0];
+  phys->ext_grad_mu_psi[1] = ext_grad_mu_psi[1];
+  phys->ext_grad_mu_psi[2] = ext_grad_mu_psi[2];
+
+  return 0;
+}
+
+
 
 
 /*****************************************************************************

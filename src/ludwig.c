@@ -66,6 +66,7 @@
 #include "brazovskii_rt.h"
 #include "surfactant_rt.h"
 #include "double_symmetric_rt.h"
+
 #include "polar_active_rt.h"
 #include "blue_phase_rt.h"
 #include "lc_droplet_rt.h"
@@ -780,7 +781,7 @@ void ludwig_run(const char * inputfile) {
 	        if (ludwig->pth->method == FE_FORCE_METHOD_STRESS_DIVERGENCE) {
 	          pth_force_colloid(ludwig->pth, ludwig->fe, ludwig->collinfo,
 			    ludwig->hydro, ludwig->map, ludwig->wall,
-			    &ludwig->lb->model);
+			    &ludwig->lb->model, ludwig->colloid_map, ludwig->rt, ludwig->phi);
 	        }
 	        else {
 	          /* Allow case with colloids using PHI_GRADMU_CORRECTION */
@@ -801,7 +802,7 @@ void ludwig_run(const char * inputfile) {
 
       if (ludwig->ch) {
 	ch_solver(ludwig->ch, ludwig->fe, ludwig->phi, ludwig->hydro,
-		  ludwig->map);
+		  ludwig->map, ludwig->rt, ludwig->colloid_map);
       }
 
       if (ludwig->pch) {
@@ -1608,6 +1609,19 @@ int free_energy_init_rt(ludwig_t * ludwig) {
 
     n = rt_double_parameter(rt, "psi_mobility", &options.mobility[1]);
     if (n == 0) pe_fatal(pe, "Please set psi_mobiilty in the input\n");
+
+    n = rt_double_parameter_vector(rt, "ext_grad_mu_phi", options.ext_grad_mu_phi);
+
+    if (n != 0) {
+      physics_ext_grad_mu_phi_set(ludwig->phys, options.ext_grad_mu_phi);
+      pe_info(pe, "Ext. grad. of chemical potential for phi: %f_%f_%f\n", options.ext_grad_mu_phi[X], options.ext_grad_mu_phi[Y], options.ext_grad_mu_phi[Z]);
+    }
+
+    n = rt_double_parameter_vector(rt, "ext_grad_mu_psi", options.ext_grad_mu_psi);
+    if (n != 0) {
+      physics_ext_grad_mu_psi_set(ludwig->phys, options.ext_grad_mu_psi);
+      pe_info(pe, "Ext. grad. of chemical potential for psi: %f_%f_%f\n", options.ext_grad_mu_psi[X], options.ext_grad_mu_psi[Y], options.ext_grad_mu_psi[Z]);
+    }
 
     ch_create(pe, cs, options, &ludwig->ch);
 

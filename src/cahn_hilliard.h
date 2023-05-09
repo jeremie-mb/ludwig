@@ -21,6 +21,7 @@
 #include "hydro.h"
 #include "advection.h"
 #include "map.h"
+#include "runtime.h"
 
 typedef struct ch_s ch_t;
 typedef struct ch_info_s ch_info_t;
@@ -28,6 +29,8 @@ typedef struct ch_info_s ch_info_t;
 struct ch_info_s {
   int nfield;             /* Actual number of order parameters */
   double mobility[NQAB];  /* Mobilities for maximum NQAB order parameters */
+  double ext_grad_mu_phi[3];
+  double ext_grad_mu_psi[3];
 };
 
 struct ch_s {
@@ -43,6 +46,6 @@ __host__ int ch_free(ch_t * ch);
 __host__ int ch_info(ch_t * ch);
 __host__ int ch_info_set(ch_t * ch, ch_info_t info);
 __host__ int ch_solver(ch_t * ch, fe_t * fe, field_t * phi, hydro_t * hydro,
-		       map_t * map);
+		       map_t * map, rt_t * rt, field_t * colloid_map);
 
 #endif
