@@ -586,3 +586,98 @@ static int map_read_ascii(FILE * fp, int index, void * self) {
 
   return 0;
 }
+
+/*****************************************************************************
+ *
+ *  map_moment_inertia_local
+ *
+ *****************************************************************************/
+
+__host__ __device__ int map_moment_inertia_local(map_t * map, colloids_info_t * cinfo, double moment_inertia_local[3][3]) {
+  /* Go through the colloid node in the strict domain */
+  
+  int ia, ib;
+  int i,j,k;
+  int index;
+  int status;
+  int nlocal[3];
+  int noffset[3];
+
+  double I[3][3] = {{0., 0., 0}, {0., 0., 0.}, {0., 0., 0.}};
+  double ijk[3];
+  double rn[3];
+
+  colloid_t * pc = NULL;
+
+  cs_nlocal(cinfo->cs, nlocal);
+  cs_nlocal_offset(cinfo->cs, noffset);
+
+  for (i = 1; i <= nlocal[X]; i++) {
+    for (j = 1; j <= nlocal[Y]; j++) {
+      for (k = 1; k <= nlocal[Z]; k++) {
+        index = cs_index(cinfo->cs, i, j, k);
+        colloids_info_map(cinfo, index, &pc);
+        if (pc == NULL) continue;
+
+        /* Global coordinates */
+        ijk[X] = i + noffset[X];
+        ijk[Y] = j + noffset[Y];
+        ijk[Z] = k + noffset[Z];
+
+        cs_minimum_distance(cinfo->cs, ijk, pc->s.r, rn);
+        
+        I[X][X] += rn[Y]*rn[Y] + rn[Z]*rn[Z];
+        I[Y][Y] += rn[X]*rn[X] + rn[Z]*rn[Z];
+        I[Z][Z] += rn[X]*rn[X] + rn[Y]*rn[Y];
+        
+        I[X][Y] -= rn[X]*rn[Y];
+        I[Y][Z] -= rn[Y]*rn[Z];
+        I[X][Z] -= rn[X]*rn[Z];
+
+        I[Y][X] -= rn[X]*rn[Y];
+        I[Z][Y] -= rn[Y]*rn[Z];
+        I[Z][X] -= rn[X]*rn[Z];
+      }
+    }
+  }
+  for (ia = 0; ia < 3; ia++) {
+    for (ib = 0; ib < 3; ib++) {
+      moment_inertia_local[ia][ib] = I[ia][ib];
+    }
+  }
+  return 0;
+}
+
+/*****************************************************************************
+ *
+ *  map_moment_inertia
+ *
+ *****************************************************************************/
+
+__host__ __device__ int map_moment_inertia(map_t * map, colloids_info_t * cinfo, double moment_inertia[3][3]) {
+  int rank;
+  MPI_Comm comm;
+  cs_cart_comm(cinfo->cs, &comm);
+
+  double moment_inertia_local[3][3] = {{0., 0., 0.},{0., 0., 0.},{0., 0., 0.}};
+  map_moment_inertia_local(map, cinfo, moment_inertia_local);
+
+  for (int ia = 0; ia < 3; ia++) {
+    for (int ib = 0; ib < 3; ib++) {
+      MPI_Allreduce(&moment_inertia_local[ia][ib], &moment_inertia[ia][ib], 1, MPI_DOUBLE, MPI_SUM, comm);
+    }
+  }
+  return 0;
+}
+
+/*****************************************************************************
+ *
+ *  map_moment_inertia_analytical
+ *  Implementation pending 
+ *
+ *****************************************************************************/
+
+__host__ __device__ int map_moment_inertia_analytical(colloids_info_t * cinfo, double moment_inertia_local[3][3]) {
+  return 0;
+}
+

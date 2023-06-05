@@ -50,7 +50,7 @@ static int build_reset_links(cs_t * cs, colloid_t * pc, map_t * map,
 			     const lb_model_t * model);
 static int build_reconstruct_links(cs_t * cs, colloids_info_t * cinfo,
 				   colloid_t * pc, map_t * map,
-				   const lb_model_t * model);
+				   const lb_model_t * model, field_t * colloid_map);
 static void build_link_mean(colloid_t * pc, double wv, const int8_t cv[3],
 			    const double rb[3]);
 static int build_colloid_wall_links(cs_t * cs, colloids_info_t * cinfo,
@@ -93,7 +93,7 @@ int build_update_map(cs_t * cs, colloids_info_t * cinfo, map_t * map, field_t * 
   double rsep_norm;
   double m[3], n[3], p[3];
 
-  double   radius, rsq;
+  double   radius, rsq, rmwsq, rpwsq;
   double   cosine, mod;
   double alpha_pacman_mn;
   double alpha_pacman_mp;
@@ -126,6 +126,7 @@ int build_update_map(cs_t * cs, colloids_info_t * cinfo, map_t * map, field_t * 
   cs_nhalo(cs, &nhalo);
 
   colloids_info_ncell(cinfo, ncell);
+
 
   for (ic = 1; ic <= nlocal[X]; ic++) {
     for (jc = 1; jc <= nlocal[Y]; jc++) {
@@ -193,12 +194,24 @@ int build_update_map(cs_t * cs, colloids_info_t * cinfo, map_t * map, field_t * 
 	   * should not extend beyond the boundary of the current domain
 	   * (but include halos). */
 
-	  i_min = imax(1 - nhalo,         (int) floor(r0[X] - radius));
-	  i_max = imin(nlocal[X] + nhalo, (int) ceil (r0[X] + radius));
-	  j_min = imax(1 - nhalo,         (int) floor(r0[Y] - radius));
-	  j_max = imin(nlocal[Y] + nhalo, (int) ceil (r0[Y] + radius));
-	  k_min = imax(1 - nhalo,         (int) floor(r0[Z] - radius));
-	  k_max = imin(nlocal[Z] + nhalo, (int) ceil (r0[Z] + radius));
+  double l_max = imax(imax(p_colloid->s.lm_rectangle, p_colloid->s.ln_rectangle), p_colloid->s.lp_rectangle);
+  
+   if (p_colloid->s.shape == COLLOID_SHAPE_RECTANGLE) {
+     i_min = imax(1 - nhalo,         (int) floor(r0[X] - l_max / 2.));
+     i_max = imin(nlocal[X] + nhalo, (int) ceil (r0[X] + l_max / 2.));
+     j_min = imax(1 - nhalo,         (int) floor(r0[Y] - l_max / 2.));
+     j_max = imin(nlocal[Y] + nhalo, (int) ceil (r0[Y] + l_max / 2.));
+     k_min = imax(1 - nhalo,         (int) floor(r0[Z] - l_max / 2.));
+     k_max = imin(nlocal[Z] + nhalo, (int) ceil (r0[Z] + l_max / 2.));
+   }
+   else { /* Assume shape is contained within a cube of length 2 radius */
+     i_min = imax(1 - nhalo,         (int) floor(r0[X] - radius));
+     i_max = imin(nlocal[X] + nhalo, (int) ceil (r0[X] + radius));
+     j_min = imax(1 - nhalo,         (int) floor(r0[Y] - radius));
+     j_max = imin(nlocal[Y] + nhalo, (int) ceil (r0[Y] + radius));
+     k_min = imax(1 - nhalo,         (int) floor(r0[Z] - radius));
+     k_max = imin(nlocal[Z] + nhalo, (int) ceil (r0[Z] + radius));
+   }
 
 	  /* Check each site to see whether it is inside or not */
 
@@ -233,6 +246,11 @@ int build_update_map(cs_t * cs, colloids_info_t * cinfo, map_t * map, field_t * 
       p[X] = m[Y]*n[Z] - m[Z]*n[Y];
       p[Y] = m[Z]*n[X] - m[X]*n[Z];
       p[Z] = m[X]*n[Y] - m[Y]*n[X];
+
+      double norm_p = modulus(p);
+      p[X] /= norm_p;
+      p[Y] /= norm_p;
+      p[Z] /= norm_p;
 
       rsep_norm = modulus(rsep);
       rsep_m[X] = dot_product(rsep, m)*m[X];
@@ -288,7 +306,7 @@ int build_update_map(cs_t * cs, colloids_info_t * cinfo, map_t * map, field_t * 
             wet[0] = p_colloid->s.c;
             wet[1] = p_colloid->s.h;
             map_data_set(map, index, wet);
-            colloid_map->data[addr_rank0(colloid_map->nsites, index)] = 1.0;
+            colloid_map->data[addr_rank0(colloid_map->nsites, index)] = 2.0;
           }
         }
         else {
@@ -298,10 +316,75 @@ int build_update_map(cs_t * cs, colloids_info_t * cinfo, map_t * map, field_t * 
           wet[0] = p_colloid->s.c;
           wet[1] = p_colloid->s.h;
           map_data_set(map, index, wet);
-          colloid_map->data[addr_rank0(colloid_map->nsites, index)] = 1.0;
+          colloid_map->data[addr_rank0(colloid_map->nsites, index)] = 2.0;
         }
       }
     }
+
+    else if (p_colloid->s.shape == COLLOID_SHAPE_VESICLE) {
+
+      double alpha_vesicle = p_colloid->s.alpha_vesicle;
+      double width_vesicle = p_colloid->s.width_vesicle;
+
+      /* "radius minus width squared" */
+      rmwsq = (radius - width_vesicle)*(radius - width_vesicle); 
+
+      /* Renormalizing p_colloid->s.m */
+      double norm_m = modulus(p_colloid->s.m);
+      m[X] = p_colloid->s.m[X] / norm_m;
+      m[Y] = p_colloid->s.m[Y] / norm_m;
+      m[Z] = p_colloid->s.m[Z] / norm_m;
+
+      rsep_norm = modulus(rsep);
+      rsep_m[X] = dot_product(rsep, m)*m[X];
+      rsep_m[Y] = dot_product(rsep, m)*m[Y];
+      rsep_m[Z] = dot_product(rsep, m)*m[Z];
+
+      rsep_m_norm = modulus(rsep_m);
+
+      if (rsep_norm == 0.0) cosalpha = 1.;
+      else cosalpha = rsep_m_norm / rsep_norm;
+
+      if (cosalpha > 1.) cosalpha = 1.;
+      if (cosalpha < -1.) cosalpha = -1.;
+
+      alpha = acos(cosalpha);
+
+      /* field_t * colloid_map defined as follows:
+          0.0 : FLUID NODE OUTSIDE THE COLLOID
+          1.0 : FLUID NODE INSIDE THE COLLOID
+          2.0 : COLLOID_NODE 
+      */
+      if ((dot_product(rsep, rsep) > rmwsq) && (dot_product(rsep, rsep) < rsq)) {
+        if (alpha < alpha_vesicle) {
+          if (dot_product(rsep, m) <= 0) {
+            index = cs_index(cs, i, j, k);
+            colloids_info_map_set(cinfo, index, p_colloid);
+            map_status_set(map, index, MAP_COLLOID);
+            wet[0] = p_colloid->s.c;
+            wet[1] = p_colloid->s.h;
+            map_data_set(map, index, wet);
+            colloid_map->data[addr_rank0(colloid_map->nsites, index)] = 2.0;
+          }
+        }
+        else {
+          index = cs_index(cs, i, j, k);
+          colloids_info_map_set(cinfo, index, p_colloid);
+          map_status_set(map, index, MAP_COLLOID);
+          wet[0] = p_colloid->s.c;
+          wet[1] = p_colloid->s.h;
+          map_data_set(map, index, wet);
+          colloid_map->data[addr_rank0(colloid_map->nsites, index)] = 2.0;
+        }
+      }
+      else if (dot_product(rsep, rsep) <= rmwsq) {
+        index = cs_index(cs, i, j, k);        
+        /* LIGHTOUSE define inside */
+        colloid_map->data[addr_rank0(colloid_map->nsites, index)] = 1.0;
+      }
+    }
+
+
     else if (p_colloid->s.shape == COLLOID_SHAPE_DEFAULT) { // Spherical colloid 
 		  if (dot_product(rsep, rsep) < rsq) {
 
@@ -322,6 +405,65 @@ int build_update_map(cs_t * cs, colloids_info_t * cinfo, map_t * map, field_t * 
             cosine = dot_product(p_colloid->s.s, rsep)/mod;
           }
         }
+
+        wet[0] = p_colloid->s.c;
+        wet[1] = cosine*p_colloid->s.h;
+
+        map_data_set(map, index, wet);
+      }
+      /* Next site */
+    }
+
+    else if (p_colloid->s.shape == COLLOID_SHAPE_RECTANGLE) {  
+
+      /*
+
+      The slab is built around its position p_colloid->s.r so that it coincides with the center of mass at all times. 
+
+      lm represents the length (in the p_colloid->s.m direction, centered on p_colloid->s.r 
+      ln represents the width (in the p_colloid->s.n direction, centered on p_colloid->s.r 
+      lm represents the thickness (in the p_colloid->s.p direction, centered on p_colloid->s.r 
+
+      */
+
+      double m[3];
+      double n[3];
+
+      double norm_m = modulus(p_colloid->s.m);
+      double norm_n = modulus(p_colloid->s.n);
+
+      m[X] = p_colloid->s.m[X] / norm_m;
+      m[Y] = p_colloid->s.m[Y] / norm_m;
+      m[Z] = p_colloid->s.m[Z] / norm_m;
+
+      n[X] = p_colloid->s.n[X] / norm_n;
+      n[Y] = p_colloid->s.n[Y] / norm_n;
+      n[Z] = p_colloid->s.n[Z] / norm_n;
+
+      p[X] = m[Y]*n[Z] - m[Z]*n[Y];
+      p[Y] = m[Z]*n[X] - m[X]*n[Z];
+      p[Z] = m[X]*n[Y] - m[Y]*n[X];
+
+      /* p should be unitary but make sure */ 
+      double norm_p = modulus(p);
+      p[X] /= norm_p;
+      p[Y] /= norm_p;
+      p[Z] /= norm_p;
+
+      double lm = p_colloid->s.lm_rectangle;
+      double ln = p_colloid->s.ln_rectangle;
+      double lp = p_colloid->s.lp_rectangle;
+
+		  if  (((dot_product(rsep, m) < lm/2) && (dot_product(rsep, m) > - lm/2)) &&
+		       ((dot_product(rsep, n) < ln/2) && (dot_product(rsep, n) > - ln/2)) &&
+		       ((dot_product(rsep, p) < lp/2) && (dot_product(rsep, p) > - lp/2))) {
+
+        /* Set index */
+ 	      index = cs_index(cs, i, j, k);
+
+        colloid_map->data[addr_rank0(colloid_map->nsites, index)] = 1.0;
+        colloids_info_map_set(cinfo, index, p_colloid);
+        map_status_set(map, index, MAP_COLLOID);
 
         wet[0] = p_colloid->s.c;
         wet[1] = cosine*p_colloid->s.h;
@@ -352,7 +494,7 @@ int build_update_map(cs_t * cs, colloids_info_t * cinfo, map_t * map, field_t * 
  *****************************************************************************/
 
 int build_update_links(cs_t * cs, colloids_info_t * cinfo, wall_t * wall,
-		       map_t * map, const lb_model_t * model) {
+		       map_t * map, const lb_model_t * model, field_t * colloid_map) {
 
   int ia;
   int ic, jc, kc;
@@ -386,7 +528,7 @@ int build_update_links(cs_t * cs, colloids_info_t * cinfo, wall_t * wall,
 
 	  if (pc->s.rebuild) {
 	    /* The shape has changed, so need to reconstruct */
-	    build_reconstruct_links(cs, cinfo, pc, map, model);
+	    build_reconstruct_links(cs, cinfo, pc, map, model, colloid_map);
 	    if (wall) build_colloid_wall_links(cs, cinfo, pc, map, model);
 	  }
 	  else {
@@ -427,7 +569,7 @@ int build_update_links(cs_t * cs, colloids_info_t * cinfo, wall_t * wall,
 
 int build_reconstruct_links(cs_t * cs, colloids_info_t * cinfo,
 			    colloid_t * p_colloid,
-			    map_t * map, const lb_model_t * model) {
+			    map_t * map, const lb_model_t * model, field_t * colloid_map) {
 
   colloid_link_t * p_link;
   colloid_link_t * p_last;
@@ -470,16 +612,34 @@ int build_reconstruct_links(cs_t * cs, colloids_info_t * cinfo,
    * the appropriate lattice nodes, which extend to the penultimate
    * site in each direction (to include halos). */
 
+  /* LIGHTHOUSE 
+     This must be generalized to accomodate colloids of different shape */
+
   r0[X] = p_colloid->s.r[X] - 1.0*offset[X];
   r0[Y] = p_colloid->s.r[Y] - 1.0*offset[Y];
   r0[Z] = p_colloid->s.r[Z] - 1.0*offset[Z];
 
-  i_min = imax(1,         (int) floor(r0[X] - radius));
-  i_max = imin(ntotal[X], (int) ceil (r0[X] + radius));
-  j_min = imax(1,         (int) floor(r0[Y] - radius));
-  j_max = imin(ntotal[Y], (int) ceil (r0[Y] + radius));
-  k_min = imax(1,         (int) floor(r0[Z] - radius));
-  k_max = imin(ntotal[Z], (int) ceil (r0[Z] + radius));
+  /* Change frame */
+  /* Just take a cube of dimension 2 times the largest dimension of the rectangle hence ensuring we cover a large enough domain */
+  
+  double l_max = imax(imax(p_colloid->s.lm_rectangle, p_colloid->s.ln_rectangle), p_colloid->s.lp_rectangle);
+
+  if (p_colloid->s.shape == COLLOID_SHAPE_RECTANGLE) {
+    i_min = imax(1,         (int) floor(r0[X] - l_max / 2.));
+    i_max = imin(ntotal[X], (int) ceil (r0[X] + l_max / 2.));
+    j_min = imax(1,         (int) floor(r0[Y] - l_max / 2.));
+    j_max = imin(ntotal[Y], (int) ceil (r0[Y] + l_max / 2.));
+    k_min = imax(1,         (int) floor(r0[Z] - l_max / 2.));
+    k_max = imin(ntotal[Z], (int) ceil (r0[Z] + l_max / 2.));
+ }
+  else { /* Assume shape is contained within a cube of length 2 radius */
+    i_min = imax(1,         (int) floor(r0[X] - radius));
+    i_max = imin(ntotal[X], (int) ceil (r0[X] + radius));
+    j_min = imax(1,         (int) floor(r0[Y] - radius));
+    j_max = imin(ntotal[Y], (int) ceil (r0[Y] + radius));
+    k_min = imax(1,         (int) floor(r0[Z] - radius));
+    k_max = imin(ntotal[Z], (int) ceil (r0[Z] + radius));
+  }
 
   for (i = i_min; i <= i_max; i++) {
     for (j = j_min; j <= j_max; j++) {
@@ -501,7 +661,7 @@ int build_reconstruct_links(cs_t * cs, colloids_info_t * cinfo,
 
 	/* Index 1 is outside, so cycle through the lattice vectors
 	 * to determine if the end is inside, and so requires a link */
-
+  
 	for (p = 1; p < model->nvel; p++) {
 
 	  /* Find the index of the inside site */
@@ -576,7 +736,6 @@ int build_reconstruct_links(cs_t * cs, colloids_info_t * cinfo,
 	    p_last = p_link;
 	    p_link = NULL;
 	  }
-
 	  /* Next lattice vector */
 	}
 

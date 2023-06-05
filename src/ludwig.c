@@ -888,7 +888,7 @@ void ludwig_run(const char * inputfile) {
 
       subgrid_update(ludwig->collinfo, ludwig->hydro, noise_flag);
       bounce_back_on_links(ludwig->bbl, ludwig->lb, ludwig->wall,
-			   ludwig->collinfo, ludwig->phi);
+			   ludwig->collinfo, ludwig->phi, ludwig->map, ludwig->rt, ludwig->phys);
       wall_bbl(ludwig->wall);
       TIMER_stop(TIMER_BBL);
     }
@@ -896,7 +896,7 @@ void ludwig_run(const char * inputfile) {
       /* No hydrodynamics, but update colloids in response to
        * external forces. */
 
-      bbl_update_colloids(ludwig->bbl, ludwig->wall, ludwig->collinfo);
+      bbl_update_colloids(ludwig->bbl, ludwig->wall, ludwig->collinfo, ludwig->map, ludwig->rt, ludwig->phys);
     }
 
 
@@ -1282,6 +1282,14 @@ int free_energy_init_rt(ludwig_t * ludwig) {
     lees_edw_create(pe, cs, info, &le);
     lees_edw_info(le);
     pth_create(pe, cs, FE_FORCE_METHOD_NO_FORCE, &ludwig->pth);
+
+    {
+      field_options_t opts = field_options_ndata_nhalo(1, 0);
+      io_info_args_rt(rt, RT_FATAL, "colloid_map", IO_INFO_READ_WRITE, &opts.iodata);
+      field_create(pe, cs, le, "colloid_map", &opts, &ludwig->colloid_map);
+    }
+
+
   }
   else if (strcmp(description, "symmetric") == 0 ||
 	   strcmp(description, "symmetric_noise") == 0) {
@@ -2268,7 +2276,7 @@ static int ludwig_colloids_update_low_freq(ludwig_t * ludwig) {
   colloids_info_update_lists(ludwig->collinfo);
 
   interact_compute(ludwig->interact, ludwig->collinfo, ludwig->map,
-        	     ludwig->psi, ludwig->ewald);
+        	     ludwig->psi, ludwig->ewald, ludwig->rt);
 
   subgrid_force_from_particles(ludwig->collinfo, ludwig->hydro, ludwig->wall);
 
@@ -2336,7 +2344,7 @@ int ludwig_colloids_update(ludwig_t * ludwig) {
   build_remove_replace(ludwig->fe, ludwig->collinfo, ludwig->lb, ludwig->phi,
          ludwig->p, ludwig->q, ludwig->psi, ludwig->map);
   build_update_links(ludwig->cs, ludwig->collinfo, ludwig->wall, ludwig->map,
-  		     &ludwig->lb->model);
+  		     &ludwig->lb->model, ludwig->colloid_map);
 
   TIMER_stop(TIMER_REBUILD);
 
@@ -2351,7 +2359,7 @@ int ludwig_colloids_update(ludwig_t * ludwig) {
   TIMER_start(TIMER_FORCES);
 
   interact_compute(ludwig->interact, ludwig->collinfo, ludwig->map,
-		   ludwig->psi, ludwig->ewald);
+		   ludwig->psi, ludwig->ewald, ludwig->rt);
   subgrid_force_from_particles(ludwig->collinfo, ludwig->hydro, ludwig->wall);
 
   TIMER_stop(TIMER_FORCES);

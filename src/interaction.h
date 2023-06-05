@@ -19,6 +19,7 @@
 #include "psi.h"
 #include "colloids.h"
 #include "ewald.h"
+#include "runtime.h"
 
 typedef enum interact_enum {
   INTERACT_PAIR = 0,
@@ -53,7 +54,7 @@ int interact_rc_set(interact_t * obj, interact_enum_t it, double rc);
 int interact_hc_set(interact_t * obj, interact_enum_t it, double hc);
 int interact_range_check(interact_t * obj, colloids_info_t * cinfo);
 int interact_compute(interact_t * interact, colloids_info_t * cinfo,
-		     map_t * map, psi_t * psi, ewald_t * ewald);
+		     map_t * map, psi_t * psi, ewald_t * ewald, rt_t * rt);
 int interact_pairwise(interact_t * interact, colloids_info_t * cinfo);
 int interact_wall(interact_t * interact, colloids_info_t * cinfo);
 int interact_bonds(interact_t * obj, colloids_info_t * cinfo);
@@ -69,5 +70,6 @@ int colloids_update_forces_external(colloids_info_t * cinfo, psi_t * psi);
 int colloids_update_forces_fluid_gravity(colloids_info_t * cinfo, map_t * map);
 int colloids_update_forces_fluid_driven(colloids_info_t * cinfo, map_t * map);
 int colloids_update_forces_ext(colloids_info_t * cinfo);
+int colloids_add_torque_mnp(colloids_info_t * cinfo, rt_t * rt);
 
 #endif

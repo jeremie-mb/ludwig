@@ -217,7 +217,7 @@ int colloids_rt_dynamics(cs_t * cs, colloids_info_t * cinfo, wall_t * wall,
   /* Assume there are always fully-resolved particles */
 
   build_update_map(cs, cinfo, map, colloid_map);
-  build_update_links(cs, cinfo, wall, map, model);
+  build_update_links(cs, cinfo, wall, map, model, colloid_map);
 
 
   return 0;
@@ -448,9 +448,21 @@ int colloids_rt_state_stub(pe_t * pe, rt_t * rt, colloids_info_t * cinfo,
   if (nrt1) pe_info(pe, format_i3, key1, state->isfixedvxyz[X],
 		    state->isfixedvxyz[Y], state->isfixedvxyz[Z]);
 
+  snprintf(key1, BUFSIZ-1, "%s_%s", stub, "isfixedwxyz");
+  nrt1 = rt_int_parameter_vector(rt, key1, state->isfixedwxyz);
+  /* Defer output until isfxiedr is known */
+
   snprintf(key, BUFSIZ-1, "%s_%s", stub, "isfixedw");
   nrt = rt_int_parameter(rt, key, &state->isfixedw);
-  if (nrt) pe_info(pe, format_i1, key, state->isfixedw);
+  if (nrt) {
+    pe_info(pe, format_i1, key, state->isfixedw);
+    /* Override any previous value of wxyz */
+    state->isfixedwxyz[X] = state->isfixedw;
+    state->isfixedwxyz[Y] = state->isfixedw;
+    state->isfixedwxyz[Z] = state->isfixedw;
+  }
+  if (nrt1) pe_info(pe, format_i3, key1, state->isfixedwxyz[X],
+		    state->isfixedwxyz[Y], state->isfixedwxyz[Z]);
 
   snprintf(key, BUFSIZ-1, "%s_%s", stub, "isfixeds");
   nrt = rt_int_parameter(rt, key, &state->isfixeds);
@@ -469,6 +481,8 @@ int colloids_rt_state_stub(pe_t * pe, rt_t * rt, colloids_info_t * cinfo,
 
   state->shape = COLLOID_SHAPE_DEFAULT;
   if (strcmp(value, "pacman") == 0) state->shape = COLLOID_SHAPE_PACMAN;
+  if (strcmp(value, "vesicle") == 0) state->shape = COLLOID_SHAPE_VESICLE;
+  if (strcmp(value, "rectangle") == 0) state->shape = COLLOID_SHAPE_RECTANGLE;
   if (nrt) pe_info(pe, format_s1, stub, value);
 
   snprintf(key, BUFSIZ-1, "%s_%s", stub, "rng");
@@ -566,6 +580,26 @@ int colloids_rt_state_stub(pe_t * pe, rt_t * rt, colloids_info_t * cinfo,
   snprintf(key, BUFSIZ-1, "%s_%s", stub, "alpha_pacman_mp");
   nrt = rt_double_parameter(rt, key, &state->alpha_pacman_mp);
   if (nrt) pe_info(pe, format_e1, key, state->alpha_pacman_mp);
+
+  snprintf(key, BUFSIZ-1, "%s_%s", stub, "lm_rectangle");
+  nrt = rt_double_parameter(rt, key, &state->lm_rectangle);
+  if (nrt) pe_info(pe, format_e1, key, state->lm_rectangle);
+
+  snprintf(key, BUFSIZ-1, "%s_%s", stub, "ln_rectangle");
+  nrt = rt_double_parameter(rt, key, &state->ln_rectangle);
+  if (nrt) pe_info(pe, format_e1, key, state->ln_rectangle);
+
+  snprintf(key, BUFSIZ-1, "%s_%s", stub, "lp_rectangle");
+  nrt = rt_double_parameter(rt, key, &state->lp_rectangle);
+  if (nrt) pe_info(pe, format_e1, key, state->lp_rectangle);
+
+  snprintf(key, BUFSIZ-1, "%s_%s", stub, "alpha_vesicle");
+  nrt = rt_double_parameter(rt, key, &state->alpha_vesicle);
+  if (nrt) pe_info(pe, format_e1, key, state->alpha_vesicle);
+
+  snprintf(key, BUFSIZ-1, "%s_%s", stub, "width_vesicle");
+  nrt = rt_double_parameter(rt, key, &state->width_vesicle);
+  if (nrt) pe_info(pe, format_e1, key, state->width_vesicle);
 
   return 0;
 }

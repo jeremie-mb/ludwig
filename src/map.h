@@ -19,6 +19,7 @@
 #include "coords.h"
 #include "memory.h"
 #include "io_harness.h"
+#include "colloids.h"
 
 enum map_status {MAP_FLUID, MAP_BOUNDARY, MAP_COLLOID, MAP_STATUS_MAX};
 
@@ -57,5 +58,9 @@ __host__ __device__ int map_status_set(map_t * obj, int index, int status);
 __host__ __device__ int map_data(map_t * obj, int index, double * data);
 __host__ __device__ int map_data_set(map_t * obj, int index, double * data);
 __host__ __device__ int map_ndata(map_t * obj, int * ndata);
+
+__host__ __device__ int map_moment_inertia_local(map_t * map, colloids_info_t * cinfo, double moment_inertia_local[3][3]);
+__host__ __device__ int map_moment_inertia(map_t * map, colloids_info_t * cinfo, double moment_inertia[3][3]);
+__host__ __device__ int map_moment_inertia_analytical(colloids_info_t * cinfo, double moment_inertia[3][3]);
 
 #endif

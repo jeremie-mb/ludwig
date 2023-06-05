@@ -28,9 +28,9 @@ typedef enum colloid_io_version colloid_io_version_t;
  * unit test consumption. The total number of variables is
  * useful to know to check the ASCII read/write. */
 
-#define NTOT_VAR (32+48)
-#define NPAD_INT  12 /* 13 - shape */
-#define NPAD_DBL  5 /* 15 - tumbletheta - tumblephi - mu - alpha - n[3] - alpha_pacman_mn - alpha_pacman_mp - deltapsi */
+#define NTOT_VAR (32+48 + 9) /* force[3], torque[3], t0[3] */
+#define NPAD_INT  9 /* 13 - shape - isfixedwxyz[3] */
+#define NPAD_DBL  0 /* 15 - tumbletheta - tumblephi - mu - alpha - n[3] - alpha_pacman_mn - alpha_pacman_mp - deltapsi  - lm_rectangle - ln_rectangle - lp_rectangle - alpha_vesicle - width_vesicle */
 #define NBOND_MAX  2
 
 enum colloid_type_enum {COLLOID_TYPE_DEFAULT = 0,
@@ -39,7 +39,9 @@ enum colloid_type_enum {COLLOID_TYPE_DEFAULT = 0,
 			COLLOID_TYPE_JANUS};
 
 enum colloid_shape_enum {COLLOID_SHAPE_DEFAULT = 0,
-			COLLOID_SHAPE_PACMAN};
+			COLLOID_SHAPE_PACMAN,
+      COLLOID_SHAPE_RECTANGLE,
+      COLLOID_SHAPE_VESICLE};
 
 typedef enum colloid_type_enum colloid_type_enum_t;
 typedef struct colloid_state_type colloid_state_t;
@@ -64,6 +66,7 @@ struct colloid_state_type {
 
   int isfixedrxyz[3];   /* Position update in specific coordinate directions */
   int isfixedvxyz[3];   /* Velocity update in specific coordinate directions */
+  int isfixedwxyz[3];   /* Velocity update in specific coordinate directions */
 
   int inter_type;         /* Interaction type of a particle */
 
@@ -113,7 +116,15 @@ struct colloid_state_type {
   double alpha_prod;
   double alpha_pacman_mn;
   double alpha_pacman_mp;
-  double dpad[NPAD_DBL];/* Again, this pads to 512 bytes to allow
+  double alpha_vesicle;
+  double width_vesicle;
+  double lm_rectangle;
+  double ln_rectangle;
+  double lp_rectangle;
+  double force[3];
+  double t0[3];
+  double torque[3];
+    double dpad[NPAD_DBL];/* Again, this pads to 512 bytes to allow
 			 * for future expansion. */
 };
 

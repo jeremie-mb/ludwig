@@ -180,9 +180,10 @@ int interact_statistic_add(interact_t * obj, interact_enum_t it, void * pot,
  *****************************************************************************/
 
 int interact_compute(interact_t * interact, colloids_info_t * cinfo,
-		     map_t * map, psi_t * psi, ewald_t * ewald) {
+		     map_t * map, psi_t * psi, ewald_t * ewald, rt_t * rt) {
 
   int nc;
+  int on;
 
   assert(interact);
   assert(cinfo);
@@ -195,7 +196,10 @@ int interact_compute(interact_t * interact, colloids_info_t * cinfo,
     colloids_update_forces_fluid_gravity(cinfo, map);
     colloids_update_forces_fluid_driven(cinfo, map);
     interact_wall(interact, cinfo);
-    
+
+    rt_int_parameter(rt, "add_torque_mnp", &on);
+    if (on) colloids_add_torque_mnp(cinfo, rt);
+   
     if (nc > 1) {
       interact_pairwise(interact, cinfo);
       interact_bonds(interact, cinfo);
@@ -366,6 +370,19 @@ int colloids_update_forces_zero(colloids_info_t * cinfo) {
     pc->torque[X] = 0.0;
     pc->torque[Y] = 0.0;
     pc->torque[Z] = 0.0;
+
+    pc->s.force[X] = 0.0;
+    pc->s.force[Y] = 0.0;
+    pc->s.force[Z] = 0.0;
+
+    pc->s.torque[X] = 0.0;
+    pc->s.torque[Y] = 0.0;
+    pc->s.torque[Z] = 0.0;
+
+    pc->s.t0[X] = 0.0;
+    pc->s.t0[Y] = 0.0;
+    pc->s.t0[Z] = 0.0;
+ 
   }
 
   return 0;
@@ -413,7 +430,7 @@ int colloids_update_forces_external(colloids_info_t * cinfo, psi_t * psi) {
 	  pc->force[Y] += g[Y];
 	  pc->force[Z] += g[Z];
 
-          if (pc->s.type == COLLOID_TYPE_SUBGRID) continue;
+    if (pc->s.type == COLLOID_TYPE_SUBGRID) continue;
 
 	  btorque[X] = pc->s.s[Y]*b0[Z] - pc->s.s[Z]*b0[Y];
 	  btorque[Y] = pc->s.s[Z]*b0[X] - pc->s.s[X]*b0[Z];
@@ -861,3 +878,93 @@ int colloids_update_forces_ext(colloids_info_t * cinfo) {
 
   return 0;
 }
+
+/*****************************************************************************
+ *
+ *  colloids_add_torque_mnp
+ *
+ *  Add a torque of magnitude tmag in a direction specified by an axis in the 
+ *  (m, n, p) frame. 
+ *
+ *  Does not derive from explicit p_colloid->s.force
+ *  One way to think about it: the torque results from fictitious forces which 
+ *  cancel out in the force balance...
+ *
+ *****************************************************************************/
+
+int colloids_add_torque_mnp(colloids_info_t * cinfo, rt_t * rt) {
+
+  int ic, jc, kc;
+  int ncell[3];
+  int noffset[3];
+  int nn = 0;
+
+  double m[3], n[3], p[3];
+  double tnorm, tmag;
+  double axis_xyz[3], axis_mnp[3];
+
+  cs_nlocal_offset(cinfo->cs, noffset);
+
+  colloid_t * p_colloid;
+
+  assert(cinfo);
+
+  nn = rt_double_parameter(rt, "torque_magnitude", &tmag);
+  if (nn == 0) pe_fatal(cinfo->pe, "Please specifiy torque_magnitude\n");
+  nn = rt_double_parameter_vector(rt, "torque_axis_mnp", axis_mnp);
+  if (nn == 0) pe_fatal(cinfo->pe, "Please specifiy torque_axis_mnp\n");
+
+  colloids_info_local_head(cinfo, &p_colloid);
+  for (; p_colloid; p_colloid = p_colloid->nextlocal) {
+
+    // m
+    double norm_m = modulus(p_colloid->s.m);
+    m[X] = p_colloid->s.m[X];
+    m[Y] = p_colloid->s.m[Y];
+    m[Z] = p_colloid->s.m[Z];
+    //n
+    double norm_n = modulus(p_colloid->s.n);
+    n[X] = p_colloid->s.n[X];
+    n[Y] = p_colloid->s.n[Y];
+    n[Z] = p_colloid->s.n[Z];
+    //p
+    p[X] = m[Y]*n[Z] - m[Z]*n[Y];
+    p[Y] = m[Z]*n[X] - m[X]*n[Z];
+    p[Z] = m[X]*n[Y] - m[Y]*n[X];
+    double norm_p = modulus(p);
+    p[X] /= norm_p;
+    p[Y] /= norm_p;
+    p[Z] /= norm_p;
+
+    /* axis_mnp[X] (or Y or Z) is the contribution of vector m (or n, or p) to the vector which defines the axis of rotation */
+    axis_xyz[X] = axis_mnp[X]*m[X] + axis_mnp[Y]*m[Y] + axis_mnp[Z]*m[Z];
+    axis_xyz[Y] = axis_mnp[X]*n[X] + axis_mnp[Y]*n[Y] + axis_mnp[Z]*n[Z];
+    axis_xyz[Z] = axis_mnp[X]*p[X] + axis_mnp[Y]*p[Y] + axis_mnp[Z]*p[Z];
+
+    /* Add this if want to rotate around primitive axes instead of axes of the colloid */
+    /*
+    axis_xyz[X] = axis_mnp[X];
+    axis_xyz[Y] = axis_mnp[Y];
+    axis_xyz[Z] = axis_mnp[Z];
+    */
+
+    double axis_xyz_norm = modulus(axis_xyz);
+    axis_xyz[X] /= axis_xyz_norm;
+    axis_xyz[Y] /= axis_xyz_norm;
+    axis_xyz[Z] /= axis_xyz_norm;
+
+    /* To prevent adding the torque several time, we consider only the domain which contains the position p_colloid->s.r */
+      
+    if (!((p_colloid->s.r[X] > noffset[X]) && (p_colloid->s.r[Y] > noffset[Y]) && (p_colloid->s.r[Z] > noffset[Z]))) {
+      return 0;
+    }   
+
+    /* This processor contains the colloid */
+    p_colloid->torque[X] += axis_xyz[0]*tmag;
+    p_colloid->torque[Y] += axis_xyz[1]*tmag;
+    p_colloid->torque[Z] += axis_xyz[2]*tmag;
+
+  }
+  return 0;
+}
+

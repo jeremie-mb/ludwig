@@ -532,7 +532,7 @@ __global__ void ch_flux_mu_ext_kernel(kernel_ctxt_t * ktx,
 
     index0 = cs_index(ch->cs, ic, jc, kc);
     if (outside_only) {
-      if ( (int) colloid_map->data[addr_rank0(colloid_map->nsites, index0)] == 0)
+      if ( (int) colloid_map->data[addr_rank0(colloid_map->nsites, index0)] == 0) /* Nodes outside the colloid */
     /* Outside of insulating vesicle */
       {
         ch->flux->fx[addr_rank1(ch->flux->nsite, info.nfield, index0, 0)] -= info.mobility[0]*info.ext_grad_mu_phi[X];
