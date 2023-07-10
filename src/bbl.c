@@ -57,12 +57,10 @@ __global__ void bbl_pass0_kernel(kernel_ctxt_t * ktxt, cs_t * cs, lb_t * lb,
 static __constant__ lb_collide_param_t lbp;
 
 static int is_chemotaxis_ = 0;
-static int is_production_ = 0;
 static int is_light_source_ = 0;
 static int is_2d_dynamics_ = 0;
 
 static int is_tumble_ = 0;
-static int fprod_ = 1;
 static int ftumble_ = 1;
 static int rtumble_ = 0;
 
@@ -810,11 +808,15 @@ int bbl_update_colloids(bbl_t * bbl, wall_t * wall, colloids_info_t * cinfo, map
 
   double mass;  
   double moment_inertia[3][3] = {{0., 0., 0.}, {0., 0., 0.}, {0., 0., 0.}};
+  double moment_inertia_local[3][3] = {{0., 0., 0.}, {0., 0., 0.}, {0., 0., 0.}};
   double tmp;
   double rho0;
   double dwall[3];
   double xb[6];
   double a[6][6];
+
+  MPI_Comm comm;
+  cs_cart_comm(cinfo->cs, &comm);
 
   colloid_t * pc;
   PI_DOUBLE(pi);
@@ -829,6 +831,14 @@ int bbl_update_colloids(bbl_t * bbl, wall_t * wall, colloids_info_t * cinfo, map
   if (n == 0) {
     pe_fatal(cinfo->pe, "Please specify method_update_implicit\n");
   }
+
+  n = rt_int_parameter(rt, "method_update_tensor_analytical", &tensor_analytical);
+  if (n == 0) {
+    pe_fatal(cinfo->pe, "Please specify method_update_tensor_analytical\n");
+  }
+
+  int num_col_nodes;
+  map_volume_allreduce(map, MAP_COLLOID, &num_col_nodes);
 
   /* All colloids, including halo */
   for ( ; pc; pc = pc->nextall) {
@@ -848,13 +858,6 @@ int bbl_update_colloids(bbl_t * bbl, wall_t * wall, colloids_info_t * cinfo, map
  
     if (pc->s.type == COLLOID_TYPE_SUBGRID) continue;
 
-/*
-    n = rt_int_parameter(rt, "method_update_tensor_analytical", &tensor_analytical);
-    if (n == 0) {
-      pe_fatal(cinfo->pe, "Please specify method_update_tensor_analytical\n");
-    }
-*/
-
     if (pc->s.shape == COLLOID_SHAPE_DEFAULT) {
       mass = (4.0/3.0)*pi*rho0*pow(pc->s.a0, 3);
       moment_inertia[0][0] = (2.0/5.0)*mass*pow(pc->s.a0, 2);
@@ -864,8 +867,8 @@ int bbl_update_colloids(bbl_t * bbl, wall_t * wall, colloids_info_t * cinfo, map
     else {
       /* Approximate the mass by taking the total number of solid nodes */
 
-      int num_col_nodes;
-      map_volume_allreduce(map, MAP_COLLOID, &num_col_nodes);
+      //int num_col_nodes;
+      //map_volume_allreduce(map, MAP_COLLOID, &num_col_nodes);
       mass = rho0*num_col_nodes;
 
       if (pc->s.shape == COLLOID_SHAPE_RECTANGLE) {
@@ -873,7 +876,7 @@ int bbl_update_colloids(bbl_t * bbl, wall_t * wall, colloids_info_t * cinfo, map
       }
 
       /* Calculate the tensor moment of inertia */
-      if (!tensor_analytical) map_moment_inertia(map, cinfo, moment_inertia);
+      if (!tensor_analytical) map_moment_inertia_local(map, cinfo, moment_inertia_local);
       else map_moment_inertia_analytical(cinfo, moment_inertia);
       
       for (ia = 0; ia < 3; ia++) {
@@ -881,24 +884,30 @@ int bbl_update_colloids(bbl_t * bbl, wall_t * wall, colloids_info_t * cinfo, map
           moment_inertia[ia][ib] *= rho0;
         }
       }
-      
-      /*
-      int step = physics_control_timestep(phys);
-      if (step % 1000 == 0) {
-      pe_info(cinfo->pe, "Complex routine: moment = \n %14.7e %14.7e %14.7e \n %14.7e %14.7e %14.7e \n %14.7e %14.7e %14.7e \n", 
-              moment_inertia[0][0], 
-              moment_inertia[0][1], 
-              moment_inertia[0][2], 
-              moment_inertia[1][0], 
-              moment_inertia[1][1], 
-              moment_inertia[1][2], 
-              moment_inertia[2][0], 
-              moment_inertia[2][1], 
-              moment_inertia[2][2]);
-      }
-      */
     }
+  }
+  
+  for (int ia = 0; ia < 3; ia++) {
+    for (int ib = 0; ib < 3; ib++) {
+      MPI_Allreduce(&moment_inertia_local[ia][ib], &moment_inertia[ia][ib], 1, MPI_DOUBLE, MPI_SUM, comm);
+    }
+  }
 
+/* 
+  pe_verbose(cinfo->pe, "moment_inertia = %f %f %f \n %f %f %f \n %f %f %f \n", 
+              moment_inertia[0][0],
+              moment_inertia[0][1],
+              moment_inertia[0][2],
+              moment_inertia[1][0],
+              moment_inertia[1][1],
+              moment_inertia[1][2],
+              moment_inertia[2][0],
+              moment_inertia[2][1],
+              moment_inertia[2][2]); 
+*/
+
+  colloids_info_all_head(cinfo, &pc);
+  for ( ; pc; pc = pc->nextall) {
     if (implicit) {
       /* Wall lubrication correction */
       wall_lubr_sphere(wall, pc->s.ah, pc->s.r, dwall);
@@ -1061,6 +1070,10 @@ int bbl_update_colloids(bbl_t * bbl, wall_t * wall, colloids_info_t * cinfo, map
     	pc->zeta[13]*pc->s.w[Y] +
     	pc->zeta[14]*pc->s.w[Z]);
     
+      pc->s.f0[X] = pc->diagnostic.fhydro[X];
+      pc->s.f0[Y] = pc->diagnostic.fhydro[Y];
+      pc->s.f0[Z] = pc->diagnostic.fhydro[Z];
+
       /* Copy non-hydrodynamic contribution for the diagnostic record. */
   
       pc->diagnostic.fnonhy[X] = pc->force[X];
@@ -1274,9 +1287,6 @@ void bbl_run_time(rt_t * rt) {
   rt_int_parameter(rt, "chemotaxis_on", &ivalue);
   is_chemotaxis_ = ivalue;
   
-  rt_int_parameter(rt, "production_on", &ivalue);
-  is_production_ = ivalue;
-  
   rt_int_parameter(rt, "light_source_on", &ivalue);
   is_light_source_ = ivalue;
 
@@ -1284,9 +1294,6 @@ void bbl_run_time(rt_t * rt) {
   light_source_[X] = vvalue[X];
   light_source_[Y] = vvalue[Y];
   light_source_[Z] = vvalue[Z];
-
-  rt_int_parameter(rt, "chemical_production_rate", &ivalue);
-  fprod_ = ivalue;
 
   rt_int_parameter(rt, "tumble_on", &ivalue);
   is_tumble_ = ivalue;

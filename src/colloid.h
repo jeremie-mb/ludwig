@@ -28,7 +28,7 @@ typedef enum colloid_io_version colloid_io_version_t;
  * unit test consumption. The total number of variables is
  * useful to know to check the ASCII read/write. */
 
-#define NTOT_VAR (32+48 + 9) /* force[3], torque[3], t0[3] */
+#define NTOT_VAR (32+48 + 12) /* f0[3], force[3], torque[3], t0[3] */
 #define NPAD_INT  9 /* 13 - shape - isfixedwxyz[3] */
 #define NPAD_DBL  0 /* 15 - tumbletheta - tumblephi - mu - alpha - n[3] - alpha_pacman_mn - alpha_pacman_mp - deltapsi  - lm_rectangle - ln_rectangle - lp_rectangle - alpha_vesicle - width_vesicle */
 #define NBOND_MAX  2
@@ -121,10 +121,11 @@ struct colloid_state_type {
   double lm_rectangle;
   double ln_rectangle;
   double lp_rectangle;
+  double f0[3];
   double force[3];
   double t0[3];
   double torque[3];
-    double dpad[NPAD_DBL];/* Again, this pads to 512 bytes to allow
+  double dpad[NPAD_DBL];/* Again, this pads to 512 bytes to allow
 			 * for future expansion. */
 };
 

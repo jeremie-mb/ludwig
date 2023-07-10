@@ -366,6 +366,12 @@ int build_update_map(cs_t * cs, colloids_info_t * cinfo, map_t * map, field_t * 
             map_data_set(map, index, wet);
             colloid_map->data[addr_rank0(colloid_map->nsites, index)] = 2.0;
           }
+          /*
+          else { // Inside gate
+            index = cs_index(cs, i, j, k);
+            colloid_map->data[addr_rank0(colloid_map->nsites, index)] = 1.0;
+          }
+          */
         }
         else {
           index = cs_index(cs, i, j, k);
@@ -377,9 +383,8 @@ int build_update_map(cs_t * cs, colloids_info_t * cinfo, map_t * map, field_t * 
           colloid_map->data[addr_rank0(colloid_map->nsites, index)] = 2.0;
         }
       }
-      else if (dot_product(rsep, rsep) <= rmwsq) {
+      else if (dot_product(rsep, rsep) <= rmwsq) { // Inside bulk
         index = cs_index(cs, i, j, k);        
-        /* LIGHTOUSE define inside */
         colloid_map->data[addr_rank0(colloid_map->nsites, index)] = 1.0;
       }
     }

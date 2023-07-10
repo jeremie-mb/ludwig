@@ -34,6 +34,9 @@
 #include "cahn_hilliard.h"
 
 __host__ int ch_update_forward_step(ch_t * ch, field_t * phif);
+__host__ int ch_update_forward_step_with_source(ch_t * ch, field_t * phif, field_t * colloid_map, double rate);
+__host__ int ch_update_forward_step_with_reaction(ch_t * ch, field_t * phif, field_t * colloid_map, double kappa1, double kappam1);
+
 __host__ int ch_flux_mu1(ch_t * ch, fe_t * fe);
 __host__ int ch_flux_mu_ext(ch_t * ch, field_t * colloid_map, int outside_only);
 
@@ -45,7 +48,11 @@ __global__ void ch_update_kernel_3d(kernel_ctxt_t * ktx, ch_t * ch,
 				    field_t * field, ch_info_t info, int xs, int ys);
 __global__ void ch_flux_mu_ext_kernel(kernel_ctxt_t * ktx, ch_t * ch,
             ch_info_t info, field_t * colloid_map, int outside_only);
-  
+__global__ void ch_update_kernel_3d_with_source(kernel_ctxt_t * ktx, ch_t * ch,
+				    field_t * field, field_t * colloid_map, ch_info_t info, double rate, int xs, int ys);
+ __global__ void ch_update_kernel_3d_with_reaction(kernel_ctxt_t * ktx, ch_t * ch,
+				    field_t * field, field_t * colloid_map, ch_info_t info, double kappa1, double kappam1, int xs, int ys);
+ 
 
 /*****************************************************************************
  *
@@ -182,6 +189,28 @@ __host__ int ch_solver(ch_t * ch, fe_t * fe, field_t * phi, hydro_t * hydro,
   assert(fe);
   assert(phi);
   int outside_only;
+  int source_on;
+  int reaction_on;
+  int n,m = 0;
+  
+  double rate;
+  double kappa1, kappam1;
+
+  n = rt_int_parameter(rt, "phi_reaction_inside_colloid", &reaction_on);
+  if (n == 1) {
+    m = rt_double_parameter(rt, "phi_reaction_kappa1", &kappa1);
+    if (m == 0) pe_fatal(hydro->pe, "Please specify phi_reaction_kappa1 if you wish to use phi_reaction_inside_colloid\n");
+    m = rt_double_parameter(rt, "phi_reaction_kappam1", &kappam1);
+    if (m == 0) pe_fatal(hydro->pe, "Please specify phi_reaction_kappam1 if you wish to use phi_reaction_inside_colloid\n");
+  }
+
+  n = rt_int_parameter(rt, "phi_source_inside_colloid", &source_on);
+  if (n == 1) {
+    m = rt_double_parameter(rt, "phi_source_rate", &rate);
+    if (m == 0) pe_fatal(hydro->pe, "Please specify phi_source_rate if you wish to use phi_source_inside_colloid\n");
+  }
+  
+  rt_int_parameter(rt, "ext_grad_mu_psi_outside_colloid_only", &outside_only);
 
   /* Compute any advective fluxes first, then diffusive fluxes. */
 
@@ -194,12 +223,15 @@ __host__ int ch_solver(ch_t * ch, fe_t * fe, field_t * phi, hydro_t * hydro,
   }
 
   ch_flux_mu1(ch, fe);
-  rt_int_parameter(rt, "ext_grad_mu_psi_outside_vesicle_only", &outside_only);
 
   ch_flux_mu_ext(ch, colloid_map, outside_only);
 
   if (map) advflux_cs_no_normal_flux(ch->flux, map);
-  ch_update_forward_step(ch, phi);
+
+  if (!source_on && !reaction_on) ch_update_forward_step(ch, phi);
+  else if (source_on && !reaction_on) ch_update_forward_step_with_source(ch, phi, colloid_map, rate);
+  else if (!source_on && reaction_on) ch_update_forward_step_with_reaction(ch, phi, colloid_map, kappa1, kappam1);
+  else pe_fatal(hydro->pe, "Incompatible values for source_on and reaction_on\n");
 
   return 0;
 }
@@ -533,7 +565,7 @@ __global__ void ch_flux_mu_ext_kernel(kernel_ctxt_t * ktx,
     index0 = cs_index(ch->cs, ic, jc, kc);
     if (outside_only) {
       if ( (int) colloid_map->data[addr_rank0(colloid_map->nsites, index0)] == 0) /* Nodes outside the colloid */
-    /* Outside of insulating vesicle */
+    /* Outside of insulating colloid */
       {
         ch->flux->fx[addr_rank1(ch->flux->nsite, info.nfield, index0, 0)] -= info.mobility[0]*info.ext_grad_mu_phi[X];
         ch->flux->fy[addr_rank1(ch->flux->nsite, info.nfield, index0, 0)] -= info.mobility[0]*info.ext_grad_mu_phi[Y];
@@ -553,6 +585,198 @@ __global__ void ch_flux_mu_ext_kernel(kernel_ctxt_t * ktx,
       ch->flux->fy[addr_rank1(ch->flux->nsite, info.nfield, index0, 1)] -= info.mobility[1]*info.ext_grad_mu_psi[Y];
       ch->flux->fz[addr_rank1(ch->flux->nsite, info.nfield, index0, 1)] -= info.mobility[1]*info.ext_grad_mu_psi[Z];
     }
+  }
+
+  return;
+}
+
+
+/*****************************************************************************
+ *
+ *  ch_update_forward_step
+ *
+ *  Update order parameter at each site in turn via the divergence of the
+ *  fluxes. This is an Euler forward step:
+ *
+ *  phi new = phi old - dt*(flux_out - flux_in)
+ *
+ *  The time step is the LB time step dt = 1.
+ *
+ *****************************************************************************/
+
+__host__ int ch_update_forward_step_with_source(ch_t * ch, field_t * phif, field_t * colloid_map, double rate) {
+
+  int nlocal[3];
+  int xs, ys, zs;
+  dim3 nblk, ntpb;
+
+  kernel_info_t limits;
+  kernel_ctxt_t * ctxt = NULL;
+
+  cs_nlocal(ch->cs, nlocal);
+  cs_strides(ch->cs, &xs, &ys, &zs);
+
+  limits.imin = 1; limits.imax = nlocal[X];
+  limits.jmin = 1; limits.jmax = nlocal[Y];
+  limits.kmin = 1; limits.kmax = nlocal[Z];
+
+  kernel_ctxt_create(ch->cs, 1, limits, &ctxt);
+  kernel_ctxt_launch_param(ctxt, &nblk, &ntpb);
+
+  tdpLaunchKernel(ch_update_kernel_3d_with_source, nblk, ntpb, 0, 0,
+		    ctxt->target, ch->target, phif->target, colloid_map->target, *ch->info, rate, xs, ys);
+
+  tdpAssert(tdpPeekAtLastError());
+  tdpAssert(tdpDeviceSynchronize());
+
+  kernel_ctxt_free(ctxt);
+
+  return 0;
+}
+
+
+/******************************************************************************
+ *
+ *  ch_update_kernel_3d
+ *
+ *****************************************************************************/
+
+__global__ void ch_update_kernel_3d_with_source(kernel_ctxt_t * ktx, ch_t * ch,
+				    field_t * field, field_t * colloid_map, ch_info_t info, double rate,
+				    int xs, int ys) {
+
+  int kindex;
+  int kiterations;
+
+  assert(ktx);
+  assert(ch);
+  assert(field);
+
+  kiterations = kernel_iterations(ktx);
+
+  for_simt_parallel(kindex, kiterations, 1) {
+
+    int ic = kernel_coords_ic(ktx, kindex);
+    int jc = kernel_coords_jc(ktx, kindex);
+    int kc = kernel_coords_kc(ktx, kindex);
+
+    int index = cs_index(ch->cs, ic, jc, kc);
+
+    for (int n = 0; n < info.nfield; n++) {
+      double phi = field->data[addr_rank1(ch->flux->nsite, info.nfield, index, n)];
+
+      phi -= ( ch->flux->fx[addr_rank1(ch->flux->nsite, info.nfield, index, n)]
+	     - ch->flux->fx[addr_rank1(ch->flux->nsite, info.nfield, index - xs, n)]
+	     + ch->flux->fy[addr_rank1(ch->flux->nsite, info.nfield, index, n)]
+             - ch->flux->fy[addr_rank1(ch->flux->nsite, info.nfield, index - ys, n)]
+             + ch->flux->fz[addr_rank1(ch->flux->nsite, info.nfield, index, n)]
+	     - ch->flux->fz[addr_rank1(ch->flux->nsite, info.nfield, index - 1,  n)]);
+
+      if ( ( (int) colloid_map->data[addr_rank0(colloid_map->nsites, index)] == 1) && (n == 0)) /* Inside the colloid */
+      {
+        phi += rate;
+      }
+      field->data[addr_rank1(ch->flux->nsite, info.nfield, index, n)] = phi;
+    }
+    /* Next site */
+  }
+
+  return;
+}
+
+
+/*****************************************************************************
+ *
+ *  ch_update_forward_step
+ *
+ *  Update order parameter at each site in turn via the divergence of the
+ *  fluxes. This is an Euler forward step:
+ *
+ *  phi new = phi old - dt*(flux_out - flux_in)
+ *
+ *  The time step is the LB time step dt = 1.
+ *
+ *****************************************************************************/
+
+__host__ int ch_update_forward_step_with_reaction(ch_t * ch, field_t * phif, field_t * colloid_map, double kappa1, double kappam1) {
+
+  int nlocal[3];
+  int xs, ys, zs;
+  dim3 nblk, ntpb;
+
+  kernel_info_t limits;
+  kernel_ctxt_t * ctxt = NULL;
+
+  cs_nlocal(ch->cs, nlocal);
+  cs_strides(ch->cs, &xs, &ys, &zs);
+
+  limits.imin = 1; limits.imax = nlocal[X];
+  limits.jmin = 1; limits.jmax = nlocal[Y];
+  limits.kmin = 1; limits.kmax = nlocal[Z];
+
+  kernel_ctxt_create(ch->cs, 1, limits, &ctxt);
+  kernel_ctxt_launch_param(ctxt, &nblk, &ntpb);
+
+  tdpLaunchKernel(ch_update_kernel_3d_with_reaction, nblk, ntpb, 0, 0,
+		    ctxt->target, ch->target, phif->target, colloid_map->target, *ch->info, kappa1, kappam1, xs, ys);
+
+  tdpAssert(tdpPeekAtLastError());
+  tdpAssert(tdpDeviceSynchronize());
+
+  kernel_ctxt_free(ctxt);
+
+  return 0;
+}
+
+
+/******************************************************************************
+ *
+ *  ch_update_kernel_3d
+ *
+ *****************************************************************************/
+
+__global__ void ch_update_kernel_3d_with_reaction(kernel_ctxt_t * ktx, ch_t * ch,
+				    field_t * field, field_t * colloid_map, ch_info_t info, double kappa1, double kappam1,
+				    int xs, int ys) {
+
+  int kindex;
+  int kiterations;
+
+  double phicopy;
+
+  assert(ktx);
+  assert(ch);
+  assert(field);
+
+  kiterations = kernel_iterations(ktx);
+
+  for_simt_parallel(kindex, kiterations, 1) {
+
+    int ic = kernel_coords_ic(ktx, kindex);
+    int jc = kernel_coords_jc(ktx, kindex);
+    int kc = kernel_coords_kc(ktx, kindex);
+
+    int index = cs_index(ch->cs, ic, jc, kc);
+
+    for (int n = 0; n < info.nfield; n++) {
+      double phi = field->data[addr_rank1(ch->flux->nsite, info.nfield, index, n)];
+
+      phi -= ( ch->flux->fx[addr_rank1(ch->flux->nsite, info.nfield, index, n)]
+	     - ch->flux->fx[addr_rank1(ch->flux->nsite, info.nfield, index - xs, n)]
+	     + ch->flux->fy[addr_rank1(ch->flux->nsite, info.nfield, index, n)]
+             - ch->flux->fy[addr_rank1(ch->flux->nsite, info.nfield, index - ys, n)]
+             + ch->flux->fz[addr_rank1(ch->flux->nsite, info.nfield, index, n)]
+	     - ch->flux->fz[addr_rank1(ch->flux->nsite, info.nfield, index - 1,  n)]);
+
+      field->data[addr_rank1(ch->flux->nsite, info.nfield, index, n)] = phi;
+      if ( (int) colloid_map->data[addr_rank0(colloid_map->nsites, index)] == 1) /* Inside the colloid */
+      {
+        phicopy = field->data[addr_rank1(field->nsites, 2, index, 0)];
+        field->data[addr_rank1(field->nsites, 2, index, 0)] += kappa1*field->data[addr_rank1(field->nsites, 2, index, 1)] - kappam1*field->data[addr_rank1(field->nsites, 2, index, 0)];
+        field->data[addr_rank1(field->nsites, 2, index, 1)] += -kappa1*field->data[addr_rank1(field->nsites, 2, index, 1)] + kappam1*phicopy;
+      }
+    }
+    /* Next site */
   }
 
   return;
