@@ -51,15 +51,18 @@ static const int  iread_ascii = 1;  /* Read ascii or binary (default) */
 static const int  include_ref = 0;  /* Include reference colloids at far x-,y-,z-corners */
 static const int  id = 1;  	    /* Output colloid id */
 static const int  cds_with_m  = 0;  /* Output coordinate and orientation */
-static const int  cds_with_v  = 1;  /* Output coordinate, velocity vector and magnitude */
+static const int  cds_with_v  = 0;  /* Output coordinate, velocity vector and magnitude */
+static const int  cds_with_v_w_m_n_f0_force_t0_torque  = 1;  /* Output coordinate, velocity vector and magnitude */
 
 static const char * format3_    = "%10.5f, %10.5f, %10.5f, ";
 static const char * format3end_ = "%10.5f, %10.5f, %10.5f\n";
 static const char * formate4end_ = "%14.6e, %14.6e, %14.6e, %14.6e\n";
+static const char * formate25end_ = "%14.6e, %14.6e, %14.6e, %14.6e, %14.6e, %14.6e, %14.6e, %14.6e, %14.6e, %14.6e, %14.6e, %14.6e, %14.6e, %14.6e, %14.6e, %14.6e, %14.6e, %14.6e, %14.6e, %14.6e, %14.6e, %14.6e, %14.6e, %14.6e, %14.6e\n";
 
 void colloids_to_csv_header(FILE * fp);
 void colloids_to_csv_header_with_m(FILE * fp);
 void colloids_to_csv_header_with_v(FILE * fp);
+void colloids_to_csv_header_with_v_w_m_n_f0_force_t0_torque(FILE * fp);
 int file_name_to_ntime(const char * filename);
 int file_name_to_nfile(const char * filename);
 
@@ -105,6 +108,7 @@ int main(int argc, char ** argv) {
 
   if (cds_with_m) colloids_to_csv_header_with_m(fp_csv);
   if (cds_with_v) colloids_to_csv_header_with_v(fp_csv);
+  if (cds_with_v_w_m_n_f0_force_t0_torque) colloids_to_csv_header_with_v_w_m_n_f0_force_t0_torque(fp_csv);
 
   for (nf = 1; nf <= nfile; nf++) {
 
@@ -159,6 +163,11 @@ int main(int argc, char ** argv) {
 	normv = sqrt(s1.v[0]*s1.v[0] + s1.v[1]*s1.v[1] + s1.v[2]*s1.v[2]);
 	fprintf(fp_csv, formate4end_, s1.v[0], s1.v[1], s1.v[2], normv);
       }
+      if (cds_with_v_w_m_n_f0_force_t0_torque) {
+	normv = sqrt(s1.v[0]*s1.v[0] + s1.v[1]*s1.v[1] + s1.v[2]*s1.v[2]);
+	fprintf(fp_csv, formate25end_, s1.v[0], s1.v[1], s1.v[2], normv, s1.w[0], s1.w[1], s1.w[2], s1.m[0], s1.m[1], s1.m[2], s1.n[0], s1.n[1], s1.n[2], s1.f0[0], s1.f0[1], s1.f0[2], s1.force[0], s1.force[1], s1.force[2], s1.t0[0], s1.t0[1], s1.t0[2], s1.torque[0], s1.torque[1], s1.torque[2]);
+      }
+ 
       ncount += 1;
 
     }
@@ -315,6 +324,94 @@ void colloids_to_csv_header_with_v(FILE * fp) {
 
   return;
 }
+
+/*****************************************************************************
+ *
+ *  colloids_to_csv_header_with_v_w_m_n
+ *
+ *****************************************************************************/
+
+void colloids_to_csv_header_with_v_w_m_n(FILE * fp) {
+
+  double r[3];
+
+  if (id) fprintf(fp, "%s", "id, ");
+  fprintf(fp, "%s", "x, y, z, vx, vy, vz, normv, wx, wy, wz, mx, my, mz, nx, ny, nz\n");
+
+  if (include_ref) {
+
+    r[0] = 1.0*NX - 1.0;
+    r[1] = 0.0;
+    r[2] = 0.0;
+
+    fprintf(fp, format3_, r[0], r[1], r[2]);
+    fprintf(fp, format3end_, 0, 0, 0, 0);
+
+    r[0] = 0.0;
+    r[1] = 1.0*NY - 1.0;
+    r[2] = 0.0;
+
+    fprintf(fp, format3_, r[0], r[1], r[2]);
+    fprintf(fp, format3end_, 0, 0, 0, 0);
+
+    r[0] = 0.0;
+    r[1] = 0.0;
+    r[2] = 1.0*NZ - 1.0;
+
+    fprintf(fp, format3_, r[0], r[1], r[2]);
+    fprintf(fp, format3end_, 0, 0, 0, 0);
+
+  }
+
+  return;
+}
+
+
+
+/*****************************************************************************
+ *
+ *  colloids_to_csv_header_with_v_w_m_n_f0_force_t0_torque
+ *
+ *****************************************************************************/
+
+void colloids_to_csv_header_with_v_w_m_n_f0_force_t0_torque(FILE * fp) {
+
+  double r[3];
+
+  if (id) fprintf(fp, "%s", "id, ");
+  fprintf(fp, "%s", "x, y, z, vx, vy, vz, normv, wx, wy, wz, mx, my, mz, nx, ny, nz, f0x, f0y, f0z, forcex, forcey, forcez, t0x, t0y, t0z, torquex, torquey, torquez\n");
+
+  if (include_ref) {
+
+    r[0] = 1.0*NX - 1.0;
+    r[1] = 0.0;
+    r[2] = 0.0;
+
+    fprintf(fp, format3_, r[0], r[1], r[2]);
+    fprintf(fp, format3end_, 0, 0, 0, 0);
+
+    r[0] = 0.0;
+    r[1] = 1.0*NY - 1.0;
+    r[2] = 0.0;
+
+    fprintf(fp, format3_, r[0], r[1], r[2]);
+    fprintf(fp, format3end_, 0, 0, 0, 0);
+
+    r[0] = 0.0;
+    r[1] = 0.0;
+    r[2] = 1.0*NZ - 1.0;
+
+    fprintf(fp, format3_, r[0], r[1], r[2]);
+    fprintf(fp, format3end_, 0, 0, 0, 0);
+
+  }
+
+  return;
+}
+
+
+
+
 
 /*****************************************************************************
  *
