@@ -455,18 +455,18 @@ int colloids_rt_state_stub(pe_t * pe, rt_t * rt, colloids_info_t * cinfo,
   nrt = rt_int_parameter(rt, key, &state->isfixeds);
   if (nrt) pe_info(pe, format_i1, key, state->isfixeds);
 
+  state->type = COLLOID_TYPE_DEFAULT;
   snprintf(key, BUFSIZ-1, "%s_%s", stub, "type");
   nrt = rt_string_parameter(rt, key, value, BUFSIZ);
 
-  snprintf(key, BUFSIZ-1, "%s_%s", stub, "shape");
-  nrt = rt_string_parameter(rt, key, value, BUFSIZ);
-
-  state->type = COLLOID_TYPE_DEFAULT;
   if (strcmp(value, "active") == 0) state->type = COLLOID_TYPE_ACTIVE;
   if (strcmp(value, "subgrid") == 0) state->type = COLLOID_TYPE_SUBGRID;
   if (nrt) pe_info(pe, format_s1, stub, value);
 
   state->shape = COLLOID_SHAPE_DEFAULT;
+  snprintf(key, BUFSIZ-1, "%s_%s", stub, "shape");
+  nrt = rt_string_parameter(rt, key, value, BUFSIZ);
+
   if (strcmp(value, "pacman") == 0) state->shape = COLLOID_SHAPE_PACMAN;
   if (nrt) pe_info(pe, format_s1, stub, value);
 
@@ -506,12 +506,23 @@ int colloids_rt_state_stub(pe_t * pe, rt_t * rt, colloids_info_t * cinfo,
   nrt = rt_double_parameter_vector(rt, key, state->s);
   if (nrt) pe_info(pe, format_e3, key, state->s[X], state->s[Y], state->s[Z]);
 
+  // Allow for non normalized m
+  double temp_m[3];
   snprintf(key, BUFSIZ-1, "%s_%s", stub, "m");
-  nrt = rt_double_parameter_vector(rt, key, state->m);
+  nrt = rt_double_parameter_vector(rt, key, temp_m);
+  double mnorm = modulus(temp_m);
+  state->m[X] = temp_m[X] / mnorm;
+  state->m[Y] = temp_m[Y] / mnorm;
+  state->m[Z] = temp_m[Z] / mnorm;
   if (nrt) pe_info(pe, format_e3, key, state->m[X], state->m[Y], state->m[Z]);
 
+  double temp_n[3];
   snprintf(key, BUFSIZ-1, "%s_%s", stub, "n");
-  nrt = rt_double_parameter_vector(rt, key, state->n);
+  nrt = rt_double_parameter_vector(rt, key, temp_n);
+  double nnorm = modulus(temp_n);
+  state->n[X] = temp_n[X] / nnorm;
+  state->n[Y] = temp_n[Y] / nnorm;
+  state->n[Z] = temp_n[Z] / nnorm;
   if (nrt) pe_info(pe, format_e3, key, state->n[X], state->n[Y], state->n[Z]);
 
   snprintf(key, BUFSIZ-1, "%s_%s", stub, "b1");
