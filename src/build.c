@@ -327,7 +327,12 @@ int build_update_map(cs_t * cs, colloids_info_t * cinfo, map_t * map, field_t * 
       double width_vesicle = p_colloid->s.width_vesicle;
 
       /* "radius minus width squared" */
-      rmwsq = (radius - width_vesicle)*(radius - width_vesicle); 
+      if (radius - width_vesicle > 0) {
+        rmwsq = (radius - width_vesicle)*(radius - width_vesicle); 
+      }
+      else {
+        rmwsq = 0;
+      }
 
       /* Renormalizing p_colloid->s.m */
       double norm_m = modulus(p_colloid->s.m);

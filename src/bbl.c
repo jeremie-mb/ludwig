@@ -44,7 +44,7 @@ struct bbl_s {
 };
 
 //static int bbl_pass1(bbl_t * bbl, lb_t * lb, colloids_info_t * cinfo);
-static int bbl_pass1(bbl_t * bbl, lb_t * lb, colloids_info_t * cinfo, field_t * phi);
+static int bbl_pass1(bbl_t * bbl, lb_t * lb, colloids_info_t * cinfo, field_t * phi, rt_t * rt, field_t * colloid_map);
 static int bbl_pass2(bbl_t * bbl, lb_t * lb, colloids_info_t * cinfo);
 static int bbl_active_conservation(bbl_t * bbl, lb_t * lb,
 				   colloids_info_t * cinfo);
@@ -160,7 +160,7 @@ int bbl_active_set(bbl_t * bbl, colloids_info_t * cinfo) {
 
 __host__
 int bounce_back_on_links(bbl_t * bbl, lb_t * lb, wall_t * wall,
-			 colloids_info_t * cinfo, field_t * phi, map_t * map, rt_t * rt, physics_t * phys) {
+			 colloids_info_t * cinfo, field_t * phi, map_t * map, rt_t * rt, physics_t * phys, field_t * colloid_map) {
 
   int ntotal;
   int nlocal[3];
@@ -181,7 +181,7 @@ int bounce_back_on_links(bbl_t * bbl, lb_t * lb, wall_t * wall,
   /* __NVCC__ TODO: remove */
   lb_memcpy(lb, tdpMemcpyDeviceToHost);
 
-  bbl_pass1(bbl, lb, cinfo, phi);
+  bbl_pass1(bbl, lb, cinfo, phi, rt, colloid_map);
 
   colloid_sums_halo(cinfo, COLLOID_SUM_DYNAMICS);
 
@@ -385,10 +385,12 @@ __global__ void bbl_pass0_kernel(kernel_ctxt_t * ktxt, cs_t * cs, lb_t * lb,
  *
  *****************************************************************************/
 
-static int bbl_pass1(bbl_t * bbl, lb_t * lb, colloids_info_t * cinfo, field_t * phi) {
+static int bbl_pass1(bbl_t * bbl, lb_t * lb, colloids_info_t * cinfo, field_t * phi, rt_t * rt, field_t * colloid_map) {
 
   int ia;
   int i, j, ij, ji;
+  int n;
+  int outside_only;
 
   double dm;
   double delta;
@@ -419,6 +421,11 @@ static int bbl_pass1(bbl_t * bbl, lb_t * lb, colloids_info_t * cinfo, field_t * 
 
   physics_ref(&phys);
   physics_rho0(phys, &rho0);
+
+  n = rt_int_parameter(rt, "chemotaxis_outside_only", &outside_only);
+  if (n == 0) {
+    pe_fatal(cinfo->pe, "Please specify chemotaxis_outside_only\n");
+  }
 
   /* All colloids, including halo */
 
@@ -487,57 +494,77 @@ static int bbl_pass1(bbl_t * bbl, lb_t * lb, colloids_info_t * cinfo, field_t * 
 	        mod = modulus(p_link->rb)*modulus(pc->s.m);
 	        rmod = 0.0;
 	        if (mod != 0.0) rmod = 1.0/mod;
-	        cost = rmod*dot_product(p_link->rb, pc->s.m);
-	        if (cost*cost > 1.0) cost = 1.0;
-	        assert(cost*cost <= 1.0);
-	        sint = sqrt(1.0 - cost*cost);
 
 	        cross_product(p_link->rb, pc->s.m, vector1);
 	        cross_product(vector1, p_link->rb, tans);
 
-          if(is_chemotaxis_) {
-            mu_phoretic = pc->s.mu_phoretic;
+          if (is_chemotaxis_) {
+            if (!outside_only) {
+              colloid_map->data[addr_rank0(colloid_map->nsites, i)] = 3.0;
+              mu_phoretic = pc->s.mu_phoretic;
 
-            cs_index_to_ijk(bbl->cs,i,lsite);
-            gphi[0] = gphi[1] = gphi[2] = 0.0;
+              cs_index_to_ijk(bbl->cs,i,lsite);
+              gphi[0] = gphi[1] = gphi[2] = 0.0;
 
-            for(pp=0;pp<NVEL;pp++) {
-              indexpp = cs_index(bbl->cs,(lsite[0]+lb->model.cv[pp][0]),(lsite[1]+lb->model.cv[pp][1]),(lsite[2]+lb->model.cv[pp][2]     ));
-              phipp = phi->data[addr_rank1(phi->nsites, phi->nf, indexpp, 0)]; 
-              gphi[0] += lb->model.wv[pp]*phipp*lb->model.cv[pp][0];
-              gphi[1] += lb->model.wv[pp]*phipp*lb->model.cv[pp][1];
-              gphi[2] += lb->model.wv[pp]*phipp*lb->model.cv[pp][2];
+              for(pp=0;pp<NVEL;pp++) {
+                indexpp = cs_index(bbl->cs,(lsite[0]+lb->model.cv[pp][0]),(lsite[1]+lb->model.cv[pp][1]),(lsite[2]+lb->model.cv[pp][2]     ));
+                phipp = phi->data[addr_rank1(phi->nsites, phi->nf, indexpp, 0)]; 
+                gphi[0] += lb->model.wv[pp]*phipp*lb->model.cv[pp][0];
+                gphi[1] += lb->model.wv[pp]*phipp*lb->model.cv[pp][1];
+                gphi[2] += lb->model.wv[pp]*phipp*lb->model.cv[pp][2];
+              }
+
+              rb_dot_gphi = dot_product(p_link->rb, gphi);
+
+              /* Assign the diffusiophoretic mobility of the local node to mu_1 or mu_2 depending on its position relative to the orientation of the colloid and the janus angle. Between the two regions we add a gradual change from mu_1 to mu_2 */
+
+              for (ia=0; ia<3; ia++) {
+                /* Tangential component of ...? */
+                tangphi[ia] = mu_phoretic*(gphi[ia] - rmod*rmod*p_link->rb[ia]*rb_dot_gphi);
+              }
+            }
+            else {
+              // If outside_only = 1, we only add the slip velocity over the outside nodes
+              if (modulus(p_link->rb) >= pc->s.ah - 1) {
+                colloid_map->data[addr_rank0(colloid_map->nsites, i)] = 3.0;
+                mu_phoretic = pc->s.mu_phoretic;
+
+                cs_index_to_ijk(bbl->cs,i,lsite);
+                gphi[0] = gphi[1] = gphi[2] = 0.0;
+
+                for(pp=0;pp<NVEL;pp++) {
+                  indexpp = cs_index(bbl->cs,(lsite[0]+lb->model.cv[pp][0]),(lsite[1]+lb->model.cv[pp][1]),(lsite[2]+lb->model.cv[pp][2]     ));
+                  phipp = phi->data[addr_rank1(phi->nsites, phi->nf, indexpp, 0)]; 
+                  gphi[0] += lb->model.wv[pp]*phipp*lb->model.cv[pp][0];
+                  gphi[1] += lb->model.wv[pp]*phipp*lb->model.cv[pp][1];
+                  gphi[2] += lb->model.wv[pp]*phipp*lb->model.cv[pp][2];
+                }
+
+                rb_dot_gphi = dot_product(p_link->rb, gphi);
+
+                /* Assign the diffusiophoretic mobility of the local node to mu_1 or mu_2 depending on its position relative to the orientation of the colloid and the janus angle. Between the two regions we add a gradual change from mu_1 to mu_2 */
+
+                for (ia=0; ia<3; ia++) {
+                  /* Tangential component of ...? */
+                  tangphi[ia] = mu_phoretic*(gphi[ia] - rmod*rmod*p_link->rb[ia]*rb_dot_gphi);
+                }
+              }
             }
 
-            rb_dot_gphi = dot_product(p_link->rb, gphi);
+	          dm_a = 0.0;
+	          for (ia = 0; ia < 3; ia++) {
+	            dm_a += -delta*tangphi[ia]*lb->model.cv[ij][ia];
+	          }
 
-            /* Assign the diffusiophoretic mobility of the local node to mu_1 or mu_2 depending on its position relative to the orientation of the colloid and the janus angle. Between the two regions we add a gradual change from mu_1 to mu_2 */
+	          lb_f(lb, i, ij, 0, &fdist);
+	          fdist += dm_a;
+	          lb_f_set(lb, i, ij, 0, fdist);
 
-            for (ia=0; ia<3; ia++) {
-              /* Tangential component of ...? */
-              tangphi[ia] = mu_phoretic*(gphi[ia] - rmod*rmod*p_link->rb[ia]*rb_dot_gphi);
-            }
+	          dm += dm_a;
+
+	          /* needed for mass conservation   */
+	          pc->sump += dm_a;
           }
-
-	        mod = modulus(tans);
-	        rmod = 0.0;
-	        if (mod != 0.0) rmod = 1.0/mod;
-	        plegendre = -sint*(pc->s.b2*cost + pc->s.b1);
-
-	        dm_a = 0.0;
-	        for (ia = 0; ia < 3; ia++) {
-	          //dm_a += -delta*plegendre*rmod*tans[ia]*lb->model.cv[ij][ia];
-	          dm_a += -delta*(plegendre*rmod*tans[ia] + tangphi[ia])*lb->model.cv[ij][ia];
-	        }
-
-	        lb_f(lb, i, ij, 0, &fdist);
-	        fdist += dm_a;
-	        lb_f_set(lb, i, ij, 0, fdist);
-
-	        dm += dm_a;
-
-	        /* needed for mass conservation   */
-	        pc->sump += dm_a;
 	      }
       }
       else {
@@ -797,7 +824,7 @@ static int bbl_pass2(bbl_t * bbl, lb_t * lb, colloids_info_t * cinfo) {
  *
  *****************************************************************************/
 
-int bbl_update_colloids(bbl_t * bbl, wall_t * wall, colloids_info_t * cinfo, map_t * map, rt_t *rt, physics_t * phys) {
+int bbl_update_colloids(bbl_t * bbl, wall_t * wall, colloids_info_t * cinfo, map_t * map, rt_t * rt, physics_t * phys) {
 
   int n;
   int implicit = 1, tensor_analytical = 0;
@@ -893,7 +920,7 @@ int bbl_update_colloids(bbl_t * bbl, wall_t * wall, colloids_info_t * cinfo, map
     }
   }
 
-/* 
+  /*
   pe_verbose(cinfo->pe, "moment_inertia = %f %f %f \n %f %f %f \n %f %f %f \n", 
               moment_inertia[0][0],
               moment_inertia[0][1],
@@ -904,7 +931,7 @@ int bbl_update_colloids(bbl_t * bbl, wall_t * wall, colloids_info_t * cinfo, map
               moment_inertia[2][0],
               moment_inertia[2][1],
               moment_inertia[2][2]); 
-*/
+  */
 
   colloids_info_all_head(cinfo, &pc);
   for ( ; pc; pc = pc->nextall) {

@@ -471,13 +471,13 @@ int colloids_rt_state_stub(pe_t * pe, rt_t * rt, colloids_info_t * cinfo,
   snprintf(key, BUFSIZ-1, "%s_%s", stub, "type");
   nrt = rt_string_parameter(rt, key, value, BUFSIZ);
 
-  snprintf(key, BUFSIZ-1, "%s_%s", stub, "shape");
-  nrt = rt_string_parameter(rt, key, value, BUFSIZ);
-
   state->type = COLLOID_TYPE_DEFAULT;
   if (strcmp(value, "active") == 0) state->type = COLLOID_TYPE_ACTIVE;
   if (strcmp(value, "subgrid") == 0) state->type = COLLOID_TYPE_SUBGRID;
   if (nrt) pe_info(pe, format_s1, stub, value);
+
+  snprintf(key, BUFSIZ-1, "%s_%s", stub, "shape");
+  nrt = rt_string_parameter(rt, key, value, BUFSIZ);
 
   state->shape = COLLOID_SHAPE_DEFAULT;
   if (strcmp(value, "pacman") == 0) state->shape = COLLOID_SHAPE_PACMAN;

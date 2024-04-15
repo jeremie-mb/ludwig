@@ -27,7 +27,7 @@ int bbl_create(pe_t * pe, cs_t * cs, lb_t * lb, bbl_t ** pobj);
 int bbl_free(bbl_t * obj);
 
 int bounce_back_on_links(bbl_t * bbl, lb_t * lb, wall_t * wall,
-			 colloids_info_t * cinfo, field_t * phi, map_t * map, rt_t * rt, physics_t * phys);
+			 colloids_info_t * cinfo, field_t * phi, map_t * map, rt_t * rt, physics_t * phys, field_t * colloid_map);
 int bbl_pass0(bbl_t * bbl, lb_t * lb, colloids_info_t * cinfo);
 
 int bbl_active_set(bbl_t * bbl, colloids_info_t * cinfo);

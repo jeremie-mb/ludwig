@@ -22,6 +22,8 @@
 #include "advection.h"
 #include "map.h"
 #include "runtime.h"
+#include "colloid.h"
+#include "colloids.h"
 
 typedef struct ch_s ch_t;
 typedef struct ch_info_s ch_info_t;
@@ -46,6 +48,6 @@ __host__ int ch_free(ch_t * ch);
 __host__ int ch_info(ch_t * ch);
 __host__ int ch_info_set(ch_t * ch, ch_info_t info);
 __host__ int ch_solver(ch_t * ch, fe_t * fe, field_t * phi, hydro_t * hydro,
-		       map_t * map, rt_t * rt, field_t * colloid_map);
+		       map_t * map, rt_t * rt, field_t * colloid_map, colloids_info_t * cinfo);
 
 #endif

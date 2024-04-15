@@ -36,6 +36,7 @@
 __host__ int ch_update_forward_step(ch_t * ch, field_t * phif);
 __host__ int ch_update_forward_step_with_source(ch_t * ch, field_t * phif, field_t * colloid_map, double rate);
 __host__ int ch_update_forward_step_with_reaction(ch_t * ch, field_t * phif, field_t * colloid_map, double kappa1, double kappam1);
+__host__ int ch_update_forward_step_with_directional_source(ch_t * ch, field_t * phif, field_t * colloid_map, double rate, double u[3], colloids_info_t * cinfo);
 
 __host__ int ch_flux_mu1(ch_t * ch, fe_t * fe);
 __host__ int ch_flux_mu_ext(ch_t * ch, field_t * colloid_map, int outside_only);
@@ -52,7 +53,8 @@ __global__ void ch_update_kernel_3d_with_source(kernel_ctxt_t * ktx, ch_t * ch,
 				    field_t * field, field_t * colloid_map, ch_info_t info, double rate, int xs, int ys);
  __global__ void ch_update_kernel_3d_with_reaction(kernel_ctxt_t * ktx, ch_t * ch,
 				    field_t * field, field_t * colloid_map, ch_info_t info, double kappa1, double kappam1, int xs, int ys);
- 
+__global__ void ch_update_kernel_3d_with_directional_source(kernel_ctxt_t * ktx, ch_t * ch,
+				    field_t * field, field_t * colloid_map, ch_info_t info, double rate, double u[3], double centercol[3], int xs, int ys);
 
 /*****************************************************************************
  *
@@ -183,7 +185,7 @@ __host__ int ch_info_set(ch_t * ch, ch_info_t info) {
  *****************************************************************************/
 
 __host__ int ch_solver(ch_t * ch, fe_t * fe, field_t * phi, hydro_t * hydro,
-		       map_t * map, rt_t * rt, field_t * colloid_map) {
+		       map_t * map, rt_t * rt, field_t * colloid_map, colloids_info_t * cinfo) {
 
   assert(ch);
   assert(fe);
@@ -191,13 +193,15 @@ __host__ int ch_solver(ch_t * ch, fe_t * fe, field_t * phi, hydro_t * hydro,
   int outside_only;
   int source_on;
   int reaction_on;
+  int directional_source_on;
   int n,m = 0;
   
   double rate;
   double kappa1, kappam1;
+  double u[3];
 
   n = rt_int_parameter(rt, "phi_reaction_inside_colloid", &reaction_on);
-  if (n == 1) {
+  if (reaction_on == 1) {
     m = rt_double_parameter(rt, "phi_reaction_kappa1", &kappa1);
     if (m == 0) pe_fatal(hydro->pe, "Please specify phi_reaction_kappa1 if you wish to use phi_reaction_inside_colloid\n");
     m = rt_double_parameter(rt, "phi_reaction_kappam1", &kappam1);
@@ -205,10 +209,19 @@ __host__ int ch_solver(ch_t * ch, fe_t * fe, field_t * phi, hydro_t * hydro,
   }
 
   n = rt_int_parameter(rt, "phi_source_inside_colloid", &source_on);
-  if (n == 1) {
+  if (source_on == 1) {
     m = rt_double_parameter(rt, "phi_source_rate", &rate);
     if (m == 0) pe_fatal(hydro->pe, "Please specify phi_source_rate if you wish to use phi_source_inside_colloid\n");
   }
+
+  n = rt_int_parameter(rt, "phi_reaction_internal_gradient", &directional_source_on);
+  if (directional_source_on == 1) {
+    m = rt_double_parameter(rt, "phi_source_rate", &rate);
+    if (m == 0) pe_fatal(hydro->pe, "Please specify phi_source_rate if you wish to use phi_source_inside_colloid\n");
+    m = rt_double_parameter_vector(rt, "internal_direction", u);
+    if (m == 0) pe_fatal(hydro->pe, "Please specify the preferred internal direction for the production of phi\n");
+  }
+  
   
   rt_int_parameter(rt, "ext_grad_mu_psi_outside_colloid_only", &outside_only);
 
@@ -228,9 +241,10 @@ __host__ int ch_solver(ch_t * ch, fe_t * fe, field_t * phi, hydro_t * hydro,
 
   if (map) advflux_cs_no_normal_flux(ch->flux, map);
 
-  if (!source_on && !reaction_on) ch_update_forward_step(ch, phi);
-  else if (source_on && !reaction_on) ch_update_forward_step_with_source(ch, phi, colloid_map, rate);
-  else if (!source_on && reaction_on) ch_update_forward_step_with_reaction(ch, phi, colloid_map, kappa1, kappam1);
+  if (!source_on && !reaction_on && !directional_source_on) ch_update_forward_step(ch, phi);
+  else if (source_on && !reaction_on && !directional_source_on) ch_update_forward_step_with_source(ch, phi, colloid_map, rate);
+  else if (!source_on && !reaction_on && directional_source_on) ch_update_forward_step_with_directional_source(ch, phi, colloid_map, rate, u, cinfo);
+  else if (!source_on && reaction_on && !directional_source_on) ch_update_forward_step_with_reaction(ch, phi, colloid_map, kappa1, kappam1);
   else pe_fatal(hydro->pe, "Incompatible values for source_on and reaction_on\n");
 
   return 0;
@@ -775,6 +789,149 @@ __global__ void ch_update_kernel_3d_with_reaction(kernel_ctxt_t * ktx, ch_t * ch
         field->data[addr_rank1(field->nsites, 2, index, 0)] += kappa1*field->data[addr_rank1(field->nsites, 2, index, 1)] - kappam1*field->data[addr_rank1(field->nsites, 2, index, 0)];
         field->data[addr_rank1(field->nsites, 2, index, 1)] += -kappa1*field->data[addr_rank1(field->nsites, 2, index, 1)] + kappam1*phicopy;
       }
+    }
+    /* Next site */
+  }
+
+  return;
+}
+
+
+/*****************************************************************************
+ *
+ *  ch_update_forward_step
+ *
+ *  Update order parameter at each site in turn via the divergence of the
+ *  fluxes. This is an Euler forward step:
+ *
+ *  phi new = phi old - dt*(flux_out - flux_in)
+ *
+ *  The time step is the LB time step dt = 1.
+ *
+ *****************************************************************************/
+
+__host__ int ch_update_forward_step_with_directional_source(ch_t * ch, field_t * phif, field_t * colloid_map, double rate, double u[3], colloids_info_t * cinfo) {
+
+  int ic, jc, kc;
+  int nlocal[3], ncell[3], noffset[3];
+  int xs, ys, zs;
+  double rc[3];
+  colloid_t * p_colloid = NULL;
+
+  cs_nlocal(ch->cs, nlocal);
+  cs_nlocal_offset(ch->cs, noffset);
+  colloids_info_ncell(cinfo, ncell);
+
+  for (ic = 0; ic <= ncell[X] + 1; ic++) {
+    for (jc = 0; jc <= ncell[Y] + 1; jc++) {
+      for (kc = 0; kc <= ncell[Z] + 1; kc++) {
+
+	      colloids_info_cell_list_head(cinfo, ic, jc, kc, &p_colloid);
+
+	      /* For each colloid in this cell, check solid/fluid status */
+
+	      for ( ; p_colloid; p_colloid = p_colloid->next) {
+
+          if (p_colloid->s.type == COLLOID_TYPE_SUBGRID) continue;
+
+	        /* Need to translate the colloid position to "local"
+	        * coordinates, so that the correct range of lattice
+	        * nodes is found */
+
+	        rc[X] = p_colloid->s.r[X] - 1.0*noffset[X];
+	        rc[Y] = p_colloid->s.r[Y] - 1.0*noffset[Y];
+	        rc[Z] = p_colloid->s.r[Z] - 1.0*noffset[Z];
+
+        }
+      }
+    }
+  }
+
+  dim3 nblk, ntpb;
+
+  kernel_info_t limits;
+  kernel_ctxt_t * ctxt = NULL;
+
+  cs_strides(ch->cs, &xs, &ys, &zs);
+
+  limits.imin = 1; limits.imax = nlocal[X];
+  limits.jmin = 1; limits.jmax = nlocal[Y];
+  limits.kmin = 1; limits.kmax = nlocal[Z];
+
+  kernel_ctxt_create(ch->cs, 1, limits, &ctxt);
+  kernel_ctxt_launch_param(ctxt, &nblk, &ntpb);
+
+  tdpLaunchKernel(ch_update_kernel_3d_with_directional_source, nblk, ntpb, 0, 0,
+		    ctxt->target, ch->target, phif->target, colloid_map->target, *ch->info, rate, u, rc, xs, ys);
+
+  tdpAssert(tdpPeekAtLastError());
+  tdpAssert(tdpDeviceSynchronize());
+
+  kernel_ctxt_free(ctxt);
+
+  return 0;
+}
+
+
+
+
+/******************************************************************************
+ *
+ *  ch_update_kernel_3d
+ *
+ *****************************************************************************/
+
+__global__ void ch_update_kernel_3d_with_directional_source(kernel_ctxt_t * ktx, ch_t * ch,
+				    field_t * field, field_t * colloid_map, ch_info_t info, double rate, double u[3], double centercol[3], int xs, int ys) {
+
+  int kindex;
+  int kiterations;
+  double r0[3], rsep[3];
+
+  double norm_u = sqrt(u[X]*u[X] + u[Y]*u[Y] + u[Z]*u[Z]);
+
+  u[X] /= norm_u;
+  u[Y] /= norm_u;
+  u[Z] /= norm_u;
+
+  assert(ktx);
+  assert(ch);
+  assert(field);
+
+  kiterations = kernel_iterations(ktx);
+  for_simt_parallel(kindex, kiterations, 1) {
+
+    int ic = kernel_coords_ic(ktx, kindex);
+    int jc = kernel_coords_jc(ktx, kindex);
+    int kc = kernel_coords_kc(ktx, kindex);
+
+    int index = cs_index(ch->cs, ic, jc, kc);
+
+    for (int n = 0; n < info.nfield; n++) {
+      double phi = field->data[addr_rank1(ch->flux->nsite, info.nfield, index, n)];
+
+      phi -= ( ch->flux->fx[addr_rank1(ch->flux->nsite, info.nfield, index, n)]
+     - ch->flux->fx[addr_rank1(ch->flux->nsite, info.nfield, index - xs, n)]
+     + ch->flux->fy[addr_rank1(ch->flux->nsite, info.nfield, index, n)]
+         - ch->flux->fy[addr_rank1(ch->flux->nsite, info.nfield, index - ys, n)]
+         + ch->flux->fz[addr_rank1(ch->flux->nsite, info.nfield, index, n)]
+     - ch->flux->fz[addr_rank1(ch->flux->nsite, info.nfield, index - 1,  n)]);
+
+      if ( ( (int) colloid_map->data[addr_rank0(colloid_map->nsites, index)] == 1) && (n == 0)) /* Inside the colloid */
+      {
+
+        r0[X] = 1.0*ic;
+        r0[Y] = 1.0*jc;
+        r0[Z] = 1.0*kc;
+
+        cs_minimum_distance(ch->cs, r0, centercol, rsep);
+        double scalarprod = (r0[X] - centercol[X])*u[X] + (r0[Y] - centercol[Y])*u[Y] + (r0[Z] - centercol[Z])*u[Z];
+        if (scalarprod > 0)
+        {
+          phi += rate*scalarprod;
+        }
+      }
+      field->data[addr_rank1(ch->flux->nsite, info.nfield, index, n)] = phi;
     }
     /* Next site */
   }

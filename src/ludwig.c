@@ -802,7 +802,7 @@ void ludwig_run(const char * inputfile) {
 
       if (ludwig->ch) {
 	ch_solver(ludwig->ch, ludwig->fe, ludwig->phi, ludwig->hydro,
-		  ludwig->map, ludwig->rt, ludwig->colloid_map);
+		  ludwig->map, ludwig->rt, ludwig->colloid_map, ludwig->collinfo);
       }
 
       if (ludwig->pch) {
@@ -888,7 +888,7 @@ void ludwig_run(const char * inputfile) {
 
       subgrid_update(ludwig->collinfo, ludwig->hydro, noise_flag);
       bounce_back_on_links(ludwig->bbl, ludwig->lb, ludwig->wall,
-			   ludwig->collinfo, ludwig->phi, ludwig->map, ludwig->rt, ludwig->phys);
+			   ludwig->collinfo, ludwig->phi, ludwig->map, ludwig->rt, ludwig->phys, ludwig->colloid_map);
       wall_bbl(ludwig->wall);
       TIMER_stop(TIMER_BBL);
     }
