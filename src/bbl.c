@@ -162,7 +162,7 @@ int bbl_active_set(bbl_t * bbl, colloids_info_t * cinfo) {
 
 __host__
 int bounce_back_on_links(bbl_t * bbl, lb_t * lb, wall_t * wall,
-			 colloids_info_t * cinfo, field_t * phi) {
+			 colloids_info_t * cinfo, field_t * phi, map_t * map, rt_t * rt, physics_t * phys) {
 
   int ntotal;
   int nlocal[3];
@@ -192,7 +192,7 @@ int bounce_back_on_links(bbl_t * bbl, lb_t * lb, wall_t * wall,
     colloid_sums_halo(cinfo, COLLOID_SUM_ACTIVE);
   }
 
-  bbl_update_colloids(bbl, wall, cinfo);
+  bbl_update_colloids(bbl, wall, cinfo, map, rt, phys);
 
   bbl_pass2(bbl, lb, cinfo);
 
@@ -486,18 +486,9 @@ static int bbl_pass1(bbl_t * bbl, lb_t * lb, colloids_info_t * cinfo, field_t * 
 	        /* We expect s.m to be a unit vector, but for floating
 	        * point purposes, we must make sure here. */
 
-          /*
 	        mod = modulus(p_link->rb)*modulus(pc->s.m);
 	        rmod = 0.0;
 	        if (mod != 0.0) rmod = 1.0/mod;
-	        cost = rmod*dot_product(p_link->rb, pc->s.m);
-	        if (cost*cost > 1.0) cost = 1.0;
-	        assert(cost*cost <= 1.0);
-	        sint = sqrt(1.0 - cost*cost);
-
-	        cross_product(p_link->rb, pc->s.m, vector1);
-	        cross_product(vector1, p_link->rb, tans);
-          */
 
           if(is_chemotaxis_) {
             mu_phoretic = pc->s.mu_phoretic;
@@ -521,28 +512,22 @@ static int bbl_pass1(bbl_t * bbl, lb_t * lb, colloids_info_t * cinfo, field_t * 
               /* Tangential component of ...? */
               tangphi[ia] = mu_phoretic*(gphi[ia] - rmod*rmod*p_link->rb[ia]*rb_dot_gphi);
             }
+
+
+	          dm_a = 0.0;
+	          for (ia = 0; ia < 3; ia++) {
+	            dm_a += -delta*tangphi[ia]*lb->model.cv[ij][ia];
+	          }
+
+	          lb_f(lb, i, ij, 0, &fdist);
+	          fdist += dm_a;
+	          lb_f_set(lb, i, ij, 0, fdist);
+
+	          dm += dm_a;
+
+	          /* needed for mass conservation   */
+	          pc->sump += dm_a;
           }
-
-          /*
-	        mod = modulus(tans);
-	        rmod = 0.0;
-	        if (mod != 0.0) rmod = 1.0/mod;
-	        plegendre = -sint*(pc->s.b2*cost + pc->s.b1);
-          */
-
-	        dm_a = 0.0;
-	        for (ia = 0; ia < 3; ia++) {
-	          dm_a += -delta*tangphi[ia]*lb->model.cv[ij][ia];
-	        }
-
-	        lb_f(lb, i, ij, 0, &fdist);
-	        fdist += dm_a;
-	        lb_f_set(lb, i, ij, 0, fdist);
-
-	        dm += dm_a;
-
-	        /* needed for mass conservation   */
-	        pc->sump += dm_a;
 	      }
       }
       else {
@@ -791,6 +776,7 @@ static int bbl_pass2(bbl_t * bbl, lb_t * lb, colloids_info_t * cinfo) {
   return 0;
 }
 
+
 /*****************************************************************************
  *
  *  bbl_update_colloids
@@ -803,20 +789,26 @@ static int bbl_pass2(bbl_t * bbl, lb_t * lb, colloids_info_t * cinfo) {
  *
  *****************************************************************************/
 
-int bbl_update_colloids(bbl_t * bbl, wall_t * wall, colloids_info_t * cinfo) {
+int bbl_update_colloids(bbl_t * bbl, wall_t * wall, colloids_info_t * cinfo, map_t * map, rt_t *rt, physics_t * phys) {
 
-  int ia;
+  int n;
+  int implicit = 1, tensor_analytical = 0, force_default_inertia = 0;
+  int ia, ib;
   int ipivot[6];
   int iprow = 0;
   int idash, j, k;
 
-  double mass;    /* Assumes (4/3) rho pi r^3 */
-  double moment;  /* also assumes (2/5) mass r^2 for sphere */
+  double mass;  
+  double moment_inertia[3][3] = {{0., 0., 0.}, {0., 0., 0.}, {0., 0., 0.}};
+  double moment_inertia_local[3][3] = {{0., 0., 0.}, {0., 0., 0.}, {0., 0., 0.}};
   double tmp;
   double rho0;
   double dwall[3];
   double xb[6];
   double a[6][6];
+
+  MPI_Comm comm;
+  cs_cart_comm(cinfo->cs, &comm);
 
   colloid_t * pc;
   PI_DOUBLE(pi);
@@ -825,215 +817,387 @@ int bbl_update_colloids(bbl_t * bbl, wall_t * wall, colloids_info_t * cinfo) {
   assert(cinfo);
 
   colloids_info_rho0(cinfo, &rho0);
-
-  /* All colloids, including halo */
-
   colloids_info_all_head(cinfo, &pc);
 
+  n = rt_int_parameter(rt, "force_default_inertia", &force_default_inertia);
+  if (n == 0) {
+    pe_fatal(cinfo->pe, "Please specify force_default_inertia\n");
+  }
+
+  n = rt_int_parameter(rt, "method_update_implicit", &implicit);
+  if (n == 0) {
+    pe_fatal(cinfo->pe, "Please specify method_update_implicit\n");
+  }
+
+  n = rt_int_parameter(rt, "method_update_tensor_analytical", &tensor_analytical);
+  if (n == 0) {
+    pe_fatal(cinfo->pe, "Please specify method_update_tensor_analytical\n");
+  }
+
+  int num_col_nodes;
+  map_volume_allreduce(map, MAP_COLLOID, &num_col_nodes);
+
+
+
+
+
+  int has_colloid = 0;
+
+  // All colloids, including halo
+  for (; pc; pc = pc->nextall) {
+
+      if (pc->s.type == COLLOID_TYPE_SUBGRID) continue;
+
+      has_colloid = 1;
+
+      if (pc->s.shape == COLLOID_SHAPE_DEFAULT || force_default_inertia) {
+          mass = (4.0/3.0)*pi*rho0*pow(pc->s.a0, 3);
+          moment_inertia[0][0] = (2.0/5.0)*mass*pow(pc->s.a0, 2);
+          moment_inertia[1][1] = (2.0/5.0)*mass*pow(pc->s.a0, 2);
+          moment_inertia[2][2] = (2.0/5.0)*mass*pow(pc->s.a0, 2);
+      } else {
+          // Approximate the mass by taking the total number of solid nodes
+          mass = rho0 * num_col_nodes;
+
+          // Calculate the tensor moment of inertia
+          if (tensor_analytical) {
+              map_moment_inertia_analytical(cinfo, moment_inertia);
+          } else {
+              map_moment_inertia_local(map, cinfo, moment_inertia_local);
+          }
+
+          // Normalize and sum contributions
+          for (ia = 0; ia < 3; ia++) {
+              for (ib = 0; ib < 3; ib++) {
+                  moment_inertia_local[ia][ib] *= rho0;
+              }
+          }
+      }
+  }
+
+  // Ensure all processes participate in MPI_Allreduce
+  MPI_Barrier(comm);
+  for (ia = 0; ia < 3; ia++) {
+      for (ib = 0; ib < 3; ib++) {
+          MPI_Allreduce(&moment_inertia_local[ia][ib], &moment_inertia[ia][ib], 1, MPI_DOUBLE, MPI_SUM, comm);
+      }
+  }
+
+
+  /*
   for ( ; pc; pc = pc->nextall) {
-
-    /* Good place as any to initialize the state force and torques */
-
-    /*
-    pe_info(cinfo->pe, "f0 = %f %f %f\n force = %f %f %f\n torque = %f %f %f\n t0 = %f %f %f\n", pc->f0[X], pc->f0[Y], pc->f0[Z], pc->force[X], pc->force[Y], pc->force[Z], pc->torque[X], pc->torque[Y], pc->torque[Z], pc->t0[X], pc->t0[Y], pc->t0[Z]); 
-    */
-
-    pc->s.force[X] = pc->f0[X] + pc->force[X];
-    pc->s.force[Y] = pc->f0[Y] + pc->force[Y];
-    pc->s.force[Z] = pc->f0[Z] + pc->force[Z];
-
-    pc->s.torque[X] = pc->torque[X];
-    pc->s.torque[Y] = pc->torque[Y];
-    pc->s.torque[Z] = pc->torque[Z];
-
-    pc->s.t0[X] = pc->t0[X];
-    pc->s.t0[Y] = pc->t0[Y];
-    pc->s.t0[Z] = pc->t0[Z];
 
     if (pc->s.type == COLLOID_TYPE_SUBGRID) continue;
 
-    /* Set up the matrix problem and solve it here. */
-
-    /* Mass and moment of inertia are those of a hard sphere
-     * with the input radius */
-
-    mass = (4.0/3.0)*pi*rho0*pow(pc->s.a0, 3);
-    moment = (2.0/5.0)*mass*pow(pc->s.a0, 2);
-
-    /* Wall lubrication correction */
-    wall_lubr_sphere(wall, pc->s.ah, pc->s.r, dwall);
-
-    /* Add inertial terms to diagonal elements */
-
-    a[0][0] = mass +   pc->zeta[0] - dwall[X];
-    a[0][1] =          pc->zeta[1];
-    a[0][2] =          pc->zeta[2];
-    a[0][3] =          pc->zeta[3];
-    a[0][4] =          pc->zeta[4];
-    a[0][5] =          pc->zeta[5];
-    a[1][1] = mass +   pc->zeta[6] - dwall[Y];
-    a[1][2] =          pc->zeta[7];
-    a[1][3] =          pc->zeta[8];
-    a[1][4] =          pc->zeta[9];
-    a[1][5] =          pc->zeta[10];
-    a[2][2] = mass +   pc->zeta[11] - dwall[Z];
-    a[2][3] =          pc->zeta[12];
-    a[2][4] =          pc->zeta[13];
-    a[2][5] =          pc->zeta[14];
-    a[3][3] = moment + pc->zeta[15];
-    a[3][4] =          pc->zeta[16];
-    a[3][5] =          pc->zeta[17];
-    a[4][4] = moment + pc->zeta[18];
-    a[4][5] =          pc->zeta[19];
-    a[5][5] = moment + pc->zeta[20];
-
-    /* Lower triangle */
-
-    a[1][0] = a[0][1];
-    a[2][0] = a[0][2];
-    a[2][1] = a[1][2];
-    a[3][0] = a[0][3];
-    a[3][1] = a[1][3];
-    a[3][2] = a[2][3];
-    a[4][0] = a[0][4];
-    a[4][1] = a[1][4];
-    a[4][2] = a[2][4];
-    a[4][3] = a[3][4];
-    a[5][0] = a[0][5];
-    a[5][1] = a[1][5];
-    a[5][2] = a[2][5];
-    a[5][3] = a[3][5];
-    a[5][4] = a[4][5];
-
-    /* Form the right-hand side */
-
-    for (ia = 0; ia < 3; ia++) {
-      xb[ia] = mass*pc->s.v[ia] + pc->f0[ia] + pc->force[ia];
-      xb[3+ia] = moment*pc->s.w[ia] + pc->t0[ia] + pc->torque[ia];
+    if (pc->s.shape == COLLOID_SHAPE_DEFAULT || force_default_inertia) {
+      mass = (4.0/3.0)*pi*rho0*pow(pc->s.a0, 3);
+      moment_inertia[0][0] = (2.0/5.0)*mass*pow(pc->s.a0, 2);
+      moment_inertia[1][1] = (2.0/5.0)*mass*pow(pc->s.a0, 2);
+      moment_inertia[2][2] = (2.0/5.0)*mass*pow(pc->s.a0, 2);
     }
+    else {
+      mass = rho0*num_col_nodes;
 
-    /* Contribution to mass conservation from squirmer */
 
-    for (ia = 0; ia < 3; ia++) {
-      xb[ia] += pc->fc0[ia];
-      xb[3+ia] += pc->tc0[ia];
-    }
+      if (tensor_analytical) map_moment_inertia_analytical(cinfo, moment_inertia);
 
-    /* Begin the Gaussian elimination */
-
-    for (k = 0; k < 6; k++) {
-      ipivot[k] = -1;
-    }
-
-    for (k = 0; k < 6; k++) {
-
-      /* Find pivot row */
-      tmp = 0.0;
-      for (idash = 0; idash < 6; idash++) {
-	if (ipivot[idash] == -1) {
-	  if (fabs(a[idash][k]) >= tmp) {
-	    tmp = fabs(a[idash][k]);
-	    iprow = idash;
-	  }
-	}
+      else {
+        map_moment_inertia_local(map, cinfo, moment_inertia_local);
+        for (int ia = 0; ia < 3; ia++) {
+          for (int ib = 0; ib < 3; ib++) {
+            MPI_Allreduce(&moment_inertia_local[ia][ib], &moment_inertia[ia][ib], 1, MPI_DOUBLE, MPI_SUM, comm);
+          }
+        }
       }
-      ipivot[k] = iprow;
-
-      /* divide pivot row by the pivot element a[iprow][k] */
-
-      if (a[iprow][k] == 0.0) {
-	pe_fatal(bbl->pe, "Gaussian elimination failed in bbl_update\n");
-      }
-
-      tmp = 1.0 / a[iprow][k];
-
-      for (j = k; j < 6; j++) {
-	a[iprow][j] *= tmp;
-      }
-      xb[iprow] *= tmp;
-
-      /* Subtract the pivot row (scaled) from remaining rows */
-
-      for (idash = 0; idash < 6; idash++) {
-	if (ipivot[idash] == -1) {
-	  tmp = a[idash][k];
-	  for (j = k; j < 6; j++) {
-	    a[idash][j] -= tmp*a[iprow][j];
-	  }
-	  xb[idash] -= tmp*xb[iprow];
-	}
+      
+      for (ia = 0; ia < 3; ia++) {
+        for (ib = 0; ib < 3; ib++) {
+          moment_inertia[ia][ib] *= rho0;
+        }
       }
     }
-
-    /* Now do the back substitution */
-
-    for (idash = 5; idash > -1; idash--) {
-      iprow = ipivot[idash];
-      tmp = xb[iprow];
-      for (k = idash+1; k < 6; k++) {
-	tmp -= a[iprow][k]*xb[ipivot[k]];
-      }
-      xb[iprow] = tmp;
-    }
-
-    /* Set the position update, but don't actually move
-     * the particles. This is deferred until the next
-     * call to coll_update() and associated cell list
-     * update.
-     * We use mean of old and new velocity. */
-
-    for (ia = 0; ia < 3; ia++) {
-      if (pc->s.isfixedrxyz[ia] == 0) pc->s.dr[ia] = 0.5*(pc->s.v[ia] + xb[ia]);
-      if (pc->s.isfixedvxyz[ia] == 0) pc->s.v[ia] = xb[ia];
-      if (pc->s.isfixedw == 0) pc->s.w[ia] = xb[3+ia];
-    }
-
-    if (pc->s.isfixeds == 0) {
-      rotate_vector(pc->s.m, xb + 3);
-      rotate_vector(pc->s.n, xb + 3);
-      rotate_vector(pc->s.s, xb + 3);
-    }
-
-    /* Record the actual hydrodynamic force on the particle */
-
-    pc->diagnostic.fhydro[X] = pc->f0[X]
-      -(pc->zeta[0]*pc->s.v[X] +
-	pc->zeta[1]*pc->s.v[Y] +
-	pc->zeta[2]*pc->s.v[Z] +
-	pc->zeta[3]*pc->s.w[X] +
-	pc->zeta[4]*pc->s.w[Y] +
-	pc->zeta[5]*pc->s.w[Z]);
-    pc->diagnostic.fhydro[Y] = pc->f0[Y]
-      -(pc->zeta[ 1]*pc->s.v[X] +
-	pc->zeta[ 6]*pc->s.v[Y] +
-	pc->zeta[ 7]*pc->s.v[Z] +
-	pc->zeta[ 8]*pc->s.w[X] +
-	pc->zeta[ 9]*pc->s.w[Y] +
-	pc->zeta[10]*pc->s.w[Z]);
-    pc->diagnostic.fhydro[Z] = pc->f0[Z]
-      -(pc->zeta[ 2]*pc->s.v[X] +
-	pc->zeta[ 7]*pc->s.v[Y] +
-	pc->zeta[11]*pc->s.v[Z] +
-	pc->zeta[12]*pc->s.w[X] +
-	pc->zeta[13]*pc->s.w[Y] +
-	pc->zeta[14]*pc->s.w[Z]);
-
-    /* Copy non-hydrodynamic contribution for the diagnostic record. */
-
-    pc->diagnostic.fnonhy[X] = pc->force[X];
-    pc->diagnostic.fnonhy[Y] = pc->force[Y];
-    pc->diagnostic.fnonhy[Z] = pc->force[Z];
-
-    /* Next colloid */
   }
+  */
 
-  /* As the lubrication force is based on the updated velocity, but
-   * the old position, we can account for the total momentum here. */
 
-  bbl_wall_lubrication_account(bbl, wall, cinfo);
+  colloids_info_all_head(cinfo, &pc);
+  for ( ; pc; pc = pc->nextall) {
+    if (implicit) {
+      /* Wall lubrication correction */
+      wall_lubr_sphere(wall, pc->s.ah, pc->s.r, dwall);
 
+      /* Add inertial terms to diagonal elements */
+
+      a[0][0] = mass +   pc->zeta[0] - dwall[X];
+      a[0][1] =          pc->zeta[1];
+      a[0][2] =          pc->zeta[2];
+      a[0][3] =          pc->zeta[3];
+      a[0][4] =          pc->zeta[4];
+      a[0][5] =          pc->zeta[5];
+      a[1][1] = mass +   pc->zeta[6] - dwall[Y];
+      a[1][2] =          pc->zeta[7];
+      a[1][3] =          pc->zeta[8];
+      a[1][4] =          pc->zeta[9];
+      a[1][5] =          pc->zeta[10];
+      a[2][2] = mass +   pc->zeta[11] - dwall[Z];
+      a[2][3] =          pc->zeta[12];
+      a[2][4] =          pc->zeta[13];
+      a[2][5] =          pc->zeta[14];
+      a[3][3] = moment_inertia[0][0] + pc->zeta[15];
+      a[3][4] = moment_inertia[0][1] + pc->zeta[16];
+      a[3][5] = moment_inertia[0][2] + pc->zeta[17];
+      a[4][4] = moment_inertia[1][1] + pc->zeta[18];
+      a[4][5] = moment_inertia[1][2] + pc->zeta[19];
+      a[5][5] = moment_inertia[2][2] + pc->zeta[20];
+  
+      /* Lower triangle */
+  
+      a[1][0] = a[0][1];
+      a[2][0] = a[0][2];
+      a[2][1] = a[1][2];
+      a[3][0] = a[0][3];
+      a[3][1] = a[1][3];
+      a[3][2] = a[2][3];
+      a[4][0] = a[0][4];
+      a[4][1] = a[1][4];
+      a[4][2] = a[2][4];
+      a[4][3] = a[3][4];
+      a[5][0] = a[0][5];
+      a[5][1] = a[1][5];
+      a[5][2] = a[2][5];
+      a[5][3] = a[3][5];
+      a[5][4] = a[4][5];
+  
+      /* Form the right-hand side */
+      /* Generalized to a moment of inertia */
+      //pe_info(cinfo->pe, "%14.7e %14.7e %14.7e %14.7e %14.7e %14.7e %14.7e %14.7e %14.7e\n", pc->force[X], pc->force[Y], pc->force[Z], pc->t0[X], pc->t0[Y], pc->t0[Z], pc->torque[X], pc->torque[Y], pc->torque[Z]);
+      for (ia = 0; ia < 3; ia++) {
+
+        pc->s.f0[ia] = pc->f0[ia];
+        pc->s.force[ia] = pc->force[ia];
+        pc->s.t0[ia] = pc->t0[ia];
+        pc->s.torque[ia] = pc->torque[ia];
+
+        xb[ia] = mass*pc->s.v[ia] + pc->f0[ia] + pc->force[ia];
+        xb[3+ia] = moment_inertia[ia][0]*pc->s.w[0] + 
+                   moment_inertia[ia][1]*pc->s.w[1] +
+                   moment_inertia[ia][2]*pc->s.w[2] +
+                   pc->t0[ia] + pc->torque[ia];
+      }
+  
+      /* Contribution to mass conservation from squirmer */
+  
+      /*
+      for (ia = 0; ia < 3; ia++) {
+        xb[ia] += pc->fc0[ia];
+        xb[3+ia] += pc->tc0[ia];
+      }
+      */
+  
+      /* Begin the Gaussian elimination */
+  
+      for (k = 0; k < 6; k++) {
+        ipivot[k] = -1;
+      }
+ 
+      for (k = 0; k < 6; k++) {
+  
+        /* Find pivot row */
+        tmp = 0.0;
+        for (idash = 0; idash < 6; idash++) {
+  	      if (ipivot[idash] == -1) {
+  	        if (fabs(a[idash][k]) >= tmp) {
+  	          tmp = fabs(a[idash][k]);
+  	          iprow = idash;
+  	        }
+  	      }
+        }
+        ipivot[k] = iprow;
+  
+        /* divide pivot row by the pivot element a[iprow][k] */
+  
+        if (a[iprow][k] == 0.0) {
+  	      pe_fatal(bbl->pe, "Gaussian elimination failed in bbl_update\n");
+        }
+  
+        tmp = 1.0 / a[iprow][k];
+  
+        for (j = k; j < 6; j++) {
+  	      a[iprow][j] *= tmp;
+        }
+        xb[iprow] *= tmp;
+  
+        /* Subtract the pivot row (scaled) from remaining rows */
+  
+        for (idash = 0; idash < 6; idash++) {
+  	      if (ipivot[idash] == -1) {
+  	        tmp = a[idash][k];
+  	        for (j = k; j < 6; j++) {
+  	          a[idash][j] -= tmp*a[iprow][j];
+  	        }
+  	        xb[idash] -= tmp*xb[iprow];
+  	      }
+        }
+      }
+  
+      /* Now do the back substitution */
+  
+      for (idash = 5; idash > -1; idash--) {
+        iprow = ipivot[idash];
+        tmp = xb[iprow];
+        for (k = idash+1; k < 6; k++) {
+  	      tmp -= a[iprow][k]*xb[ipivot[k]];
+        }
+        xb[iprow] = tmp;
+      }
+  
+      /* Set the position update, but don't actually move
+       * the particles. This is deferred until the next
+       * call to coll_update() and associated cell list
+       * update.
+       * We use mean of old and new velocity. */
+  
+      for (ia = 0; ia < 3; ia++) {
+        if (pc->s.isfixedrxyz[ia] == 0) pc->s.dr[ia] = 0.5*(pc->s.v[ia] + xb[ia]);
+        if (pc->s.isfixedvxyz[ia] == 0) pc->s.v[ia] = xb[ia];
+        pc->s.w[ia] = xb[3+ia];
+        //if (pc->s.isfixedwxyz[ia] == 0) pc->s.w[ia] = xb[3+ia];
+      }
+
+      if (pc->s.isfixeds == 0) {
+        rotate_vector(pc->s.m, xb + 3);
+        rotate_vector(pc->s.n, xb + 3); 
+        rotate_vector(pc->s.s, xb + 3);
+      }
+  
+      /* Record the actual hydrodynamic force on the particle */
+  
+      pc->diagnostic.fhydro[X] = pc->f0[X]
+          -(pc->zeta[0]*pc->s.v[X] +
+    	pc->zeta[1]*pc->s.v[Y] +
+    	pc->zeta[2]*pc->s.v[Z] +
+    	pc->zeta[3]*pc->s.w[X] +
+    	pc->zeta[4]*pc->s.w[Y] +
+    	pc->zeta[5]*pc->s.w[Z]);
+      pc->diagnostic.fhydro[Y] = pc->f0[Y]
+      - (pc->zeta[ 1]*pc->s.v[X] +
+    	pc->zeta[ 6]*pc->s.v[Y] +
+    	pc->zeta[ 7]*pc->s.v[Z] +
+    	pc->zeta[ 8]*pc->s.w[X] +
+    	pc->zeta[ 9]*pc->s.w[Y] +
+    	pc->zeta[10]*pc->s.w[Z]);
+      pc->diagnostic.fhydro[Z] = pc->f0[Z]
+      - (pc->zeta[ 2]*pc->s.v[X] +
+    	pc->zeta[ 7]*pc->s.v[Y] +
+    	pc->zeta[11]*pc->s.v[Z] +
+    	pc->zeta[12]*pc->s.w[X] +
+    	pc->zeta[13]*pc->s.w[Y] +
+    	pc->zeta[14]*pc->s.w[Z]);
+    
+      pc->s.f0[X] = pc->diagnostic.fhydro[X];
+      pc->s.f0[Y] = pc->diagnostic.fhydro[Y];
+      pc->s.f0[Z] = pc->diagnostic.fhydro[Z];
+
+      /* Copy non-hydrodynamic contribution for the diagnostic record. */
+  
+      pc->diagnostic.fnonhy[X] = pc->force[X];
+      pc->diagnostic.fnonhy[Y] = pc->force[Y];
+      pc->diagnostic.fnonhy[Z] = pc->force[Z];
+
+      bbl_wall_lubrication_account(bbl, wall, cinfo);
+    }  
+      /* Next colloid */
+
+    else if (!implicit) {
+    /* Carry out explicit update */
+
+      double u[3] = {0., 0., 0.};
+      double omega[3] = {0., 0., 0.};
+      double ID_matrix[3][3] = {{0., 0., 0.}, {0., 0., 0.}, {0., 0., 0.}};
+
+      /* Velocity and angular velocity are given explictly */
+      for (ia = 0; ia<3; ia++) { 
+        u[ia] = pc->s.v[ia] + (1 / mass)*(pc->f0[ia] + pc->force[ia]);
+        omega[ia] = moment_inertia[ia][0]*pc->s.w[0] + moment_inertia[ia][1]*pc->s.w[1] + moment_inertia[ia][2]*pc->s.w[2] + pc->t0[ia] + pc->torque[ia];
+      }
+
+      /* Multiply omega by inverse of tensor of inertia (pivot gauss also done on identity matrix to check) */
+
+      for (k = 0; k < 3; k++) {
+        ipivot[k] = -1;
+      }
+ 
+      for (k = 0; k < 3; k++) {
+  
+        /* Find pivot row */
+        tmp = 0.0;
+        for (idash = 0; idash < 3; idash++) {
+  	      if (ipivot[idash] == -1) {
+  	        if (fabs(moment_inertia[idash][k]) >= tmp) {
+  	          tmp = fabs(moment_inertia[idash][k]);
+  	          iprow = idash;
+  	        }
+  	      }
+        }
+        ipivot[k] = iprow;
+  
+        /* divide pivot row by the pivot element a[iprow][k] */
+  
+        if (moment_inertia[iprow][k] == 0.0) {
+  	      pe_fatal(bbl->pe, "Gaussian elimination failed in bbl_update\n");
+        }
+  
+        tmp = 1.0 / moment_inertia[iprow][k];
+  
+        for (j = k; j < 3; j++) {
+  	      moment_inertia[iprow][j] *= tmp;
+          ID_matrix[iprow][j] *= tmp;
+        }
+        omega[iprow] *= tmp;
+  
+        /* Subtract the pivot row (scaled) from remaining rows */
+  
+        for (idash = 0; idash < 3; idash++) {
+  	      if (ipivot[idash] == -1) {
+  	        tmp = moment_inertia[idash][k];
+  	        for (j = k; j < 3; j++) {
+  	          moment_inertia[idash][j] -= tmp*moment_inertia[iprow][j];
+              ID_matrix[idash][j] -= tmp*ID_matrix[idash][j];
+  	        }
+  	        omega[idash] -= tmp*omega[iprow];
+  	      }
+        }
+      }
+  
+      /* Now do the back substitution */
+  
+      for (idash = 2; idash > -1; idash--) {
+        iprow = ipivot[idash];
+        tmp = omega[iprow];
+        for (k = idash+1; k < 3; k++) {
+  	      tmp -= moment_inertia[iprow][k]*omega[ipivot[k]];
+          //ID_matrix[iprow][k] = tmp;
+          //moment_inertia[iprow][k] = tmp;
+        }
+        omega[iprow] = tmp;
+      }
+
+      for (ia = 0; ia < 3; ia++) {
+        if (pc->s.isfixedrxyz[ia] == 0) pc->s.dr[ia] = 0.5*(pc->s.v[ia] + u[ia]);
+        if (pc->s.isfixedvxyz[ia] == 0) pc->s.v[ia] = u[ia];
+        if (pc->s.isfixedw == 0) pc->s.w[ia] = omega[ia];
+      }
+
+      if (pc->s.isfixeds == 0) {
+        rotate_vector(pc->s.m, omega);
+        rotate_vector(pc->s.n, omega); 
+        rotate_vector(pc->s.s, omega);
+      }
+    }
+  }
   return 0;
 }
+
 
 /*****************************************************************************
  *
@@ -1237,6 +1401,7 @@ double phi_production_by_coll_count(colloids_info_t * cinfo, field_t * phi, map_
               field_scalar_set(phi, i, phi0 + alpha_prod);
               int index_outside = cs_index(phi->cs, lsite2[X], lsite2[Y], lsite2[Z]);
               produced += alpha_prod;
+              colloid_map->data[addr_rank0(colloid_map->nsites, j)] = 2.0;
             }
           /* Next link */
           }

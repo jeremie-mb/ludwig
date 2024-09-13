@@ -839,6 +839,7 @@ void ludwig_run(const char * inputfile) {
       hydro_u_zero(ludwig->hydro, uzero);
 
       /* Viscosity computation */
+
       if (ludwig->visc) {
 	ludwig->visc->func->update(ludwig->visc, ludwig->hydro);
       }
@@ -886,7 +887,7 @@ void ludwig_run(const char * inputfile) {
 
       subgrid_update(ludwig->collinfo, ludwig->hydro, noise_flag);
       bounce_back_on_links(ludwig->bbl, ludwig->lb, ludwig->wall,
-			   ludwig->collinfo, ludwig->phi);
+			   ludwig->collinfo, ludwig->phi, ludwig->map, ludwig->rt, ludwig->phys);
       wall_bbl(ludwig->wall);
       TIMER_stop(TIMER_BBL);
     }
@@ -894,7 +895,7 @@ void ludwig_run(const char * inputfile) {
       /* No hydrodynamics, but update colloids in response to
        * external forces. */
 
-      bbl_update_colloids(ludwig->bbl, ludwig->wall, ludwig->collinfo);
+      bbl_update_colloids(ludwig->bbl, ludwig->wall, ludwig->collinfo, ludwig->map, ludwig->rt, ludwig->phys);
     }
 
 
