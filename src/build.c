@@ -281,7 +281,7 @@ int build_update_map(cs_t * cs, colloids_info_t * cinfo, map_t * map, field_t * 
       /* alpha_pacman_mp is is currently unused */
       if (dot_product(rsep, rsep) < rsq) {
         if (alpha_mn < alpha_pacman_mn) {
-          if (rsep_m < 0) {
+          if (rsep_m < sqrt(2)) {
             index = cs_index(cs, i, j, k);
             colloids_info_map_set(cinfo, index, p_colloid);
             map_status_set(map, index, MAP_COLLOID);
